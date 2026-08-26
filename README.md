@@ -20,12 +20,29 @@ the browser never hits CORS walls and no third-party proxy sees your feeds.
 
 ## GitHub Pages
 
-Hosted at https://jalamb5.github.io/caster/. Pages is static-only, so the
-same-origin `/fetch` proxy is **not** available there — adding a show falls
-back to the public CORS proxies (can be flaky). Playback, shuffle, sleep
-timer, and lock-screen controls work the same; already-saved shows work
-offline of any proxy. (The optional Settings → Custom CORS proxy field exists
-for pointing at your own fetch service if you ever want one.)
+Hosted at https://jalamb5.github.io/caster/. Your favourite shows ship as
+**bundled data** (`feeds.json`, committed to the repo) — the app fetches no
+RSS at runtime, so there's no CORS, no proxy, and nothing to go flaky.
+Playback uses each episode's audio URL directly, which works cross-origin.
+Already-saved shows work offline.
+
+### Refreshing show data
+
+New episodes appear when `feeds.json` is regenerated and pushed:
+
+```bash
+python3 refresh_feeds.py     # fetches the FEEDS list, rewrites feeds.json
+git add feeds.json && git commit -m "refresh feeds" && git push
+```
+
+Add or remove shows by editing the `FEEDS` list at the top of
+`refresh_feeds.py` (any podcast RSS URL — including private Patreon feeds).
+Play history is stored per-episode on your device, so refreshing never resets
+what you've heard.
+
+The optional ⚙ Settings → **Custom CORS proxy** field still exists if you ever
+want to add a show live from inside the app (it fetches that one feed at
+runtime); bundled shows never need it.
 
 ## How the algorithm works
 

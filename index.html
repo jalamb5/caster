@@ -234,9 +234,42 @@ function loadState(){
   try{ const raw = localStorage.getItem(LS_KEY); if(raw){ state = JSON.parse(raw); } }catch(e){}
   if(!state || !state.shows) state = { shows:[], settings:{ freshness:60, repeatGuardHours:6, customProxy:'' } };
   state.settings = Object.assign({ freshness:60, repeatGuardHours:6, customProxy:'' }, state.settings||{});
+  state.bundledUpdated = state.bundledUpdated || '';
 }
 function saveState(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ console.warn('save failed', e); } }
 loadState();
+
+/* ---------- bundled shows (static feeds.json, committed to the repo) ----------
+   The hosted app has no proxy, so the favourite shows ship as pre-fetched data.
+   On boot we fetch feeds.json, refresh each bundled show's episode list, and
+   carry over play state (isPlayed / playCount / lastPlayedAt / position) by
+   episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
+async function loadBundledShows(){
+  try{
+    const r = await fetch('feeds.json');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    state.bundledUpdated = data.updated || '';
+    for(const bs of data.shows || []){
+      const ex = state.shows.find(s => s.feedUrl === bs.feedUrl);
+      const oldMap = ex ? new Map(ex.episodes.map(e => [e.guid, e])) : new Map();
+      const eps = (bs.episodes || []).map(ne => {
+        const old = oldMap.get(ne.guid);
+        return Object.assign(ne, old
+          ? { isPlayed: old.isPlayed, playCount: old.playCount, lastPlayedAt: old.lastPlayedAt, position: old.position }
+          : { isPlayed: false, playCount: 0, lastPlayedAt: 0, position: 0 });
+      });
+      if(ex){
+        ex.title = bs.title; ex.author = bs.author;
+        ex.artwork = bs.artwork || ex.artwork;
+        ex.episodes = eps;
+      } else {
+        state.shows.push({ id: bs.feedUrl, feedUrl: bs.feedUrl, title: bs.title, author: bs.author, artwork: bs.artwork, episodes: eps });
+      }
+    }
+    saveState();
+  }catch(e){ /* offline or first load — user-added shows still work */ }
+}
 
 const $ = s => document.querySelector(s);
 const audio = $('#audio');
@@ -679,11 +712,14 @@ function openSettingsModal(){
     <label class="f">Custom CORS proxy (optional — e.g. your own Mini proxy)</label>
     <input type="text" id="proxyInput" placeholder="https://…/fetch?url=" value="${esc(s.customProxy)}">
     <p class="hint">Leave blank for auto (direct → allorigins → corsproxy). Point at your own proxy to keep feed fetches private.</p>
+    <p class="hint" id="bundledDate">${state.bundledUpdated ? 'Bundled show data: updated ' + esc(new Date(state.bundledUpdated).toLocaleDateString()) + '.' : ''}</p>
   `, () => {
     const fresh = $('#freshRange'), guard = $('#guardRange');
     fresh.addEventListener('input', () => { state.settings.freshness = +fresh.value; $('#freshLabel').textContent = '~' + fresh.value + ' days since last heard → back to full strength'; saveState(); });
     guard.addEventListener('input', () => { state.settings.repeatGuardHours = +guard.value; $('#guardLabel').textContent = guard.value + ' hour(s) — stops the same episode coming back tonight'; saveState(); });
     $('#proxyInput').addEventListener('change', e => { state.settings.customProxy = e.target.value.trim(); saveState(); });
+    const bd = $('#bundledDate');
+    if(bd && state.bundledUpdated) bd.textContent = 'Bundled show data: updated ' + new Date(state.bundledUpdated).toLocaleDateString() + ' — run refresh_feeds.py and push to refresh.';
   });
 }
 
@@ -767,13 +803,14 @@ $('#ovSleep').addEventListener('click', openSleepSheet);
 
 /* ---------- expose a small API (testing & future automation) ---------- */
 window.caster = {
-  state, saveState, parseFeed, fetchWithCors, addShowFromRSS, refreshShow,
+  state, saveState, parseFeed, fetchWithCors, addShowFromRSS, refreshShow, loadBundledShows, renderAll,
   episodeWeight, pickEpisode, markHeard, markPlayedIfDone,
   playEpisode, playGuid, shuffleNow, next, skipCurrent, togglePlay,
   searchiTunes, current, showById, unplayedCount,
 };
 
 renderAll();
+loadBundledShows().then(renderAll);
 </script>
 </body>
 </html>
