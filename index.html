@@ -44,6 +44,9 @@
     background:var(--surface);color:var(--text);font-size:17px;cursor:pointer;display:grid;place-items:center;
   }
   .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px;}
+  .shuffle-all{cursor:pointer;background:linear-gradient(135deg,#241a10,#1a1a21 60%);border-color:#3a2c1c;}
+  .shuffle-all:active{transform:scale(.985);}
+  .shuffle-all .sa-icon{width:46px;height:46px;border-radius:14px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:22px;flex:none;}
   .muted{color:var(--muted);}
   .small{font-size:13px;}
   .empty{text-align:center;padding:48px 20px;color:var(--muted);}
@@ -294,6 +297,19 @@ function pickEpisode(show, excludeGuid, t=now()){
   for(const e of pool){ r -= episodeWeight(e,t); if(r <= 0) return e; }
   return pool[pool.length-1];
 }
+/* Shuffle across ALL shows: pick the show first, weighted by unplayed count
+   (so a show with lots of unheard episodes dominates), then a weighted episode
+   inside it. An all-heard show still gets a share — never excluded. */
+function pickAcrossShows(t=now()){
+  const shows = state.shows.filter(s => (s.episodes||[]).some(e => e.url));
+  if(!shows.length) return null;
+  const weight = s => 1 + unplayedCount(s) * 2;
+  const total = shows.reduce((a,s) => a + weight(s), 0);
+  let r = Math.random() * total;
+  for(const s of shows){ r -= weight(s); if(r <= 0) return {show: s, ep: pickEpisode(s, null, t)}; }
+  const s = shows[shows.length-1];
+  return {show: s, ep: pickEpisode(s, null, t)};
+}
 function markHeard(ep, t=now()){            // started or skipped → sinks for a while
   ep.playCount = (ep.playCount||0) + 1;
   ep.lastPlayedAt = t;
@@ -485,6 +501,12 @@ function shuffleNow(showId){
   playEpisode(show, ep);
 }
 
+function shuffleAll(){
+  const pick = pickAcrossShows();
+  if(!pick || !pick.ep){ toast('No playable episodes'); return; }
+  playEpisode(pick.show, pick.ep);
+}
+
 function pause(reason){
   audio.pause();
   if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused';
@@ -553,15 +575,29 @@ function renderHome(){
     $('#emptyAdd')?.addEventListener('click', openAddModal);
     return;
   }
-  v.innerHTML = '<div class="card">' + state.shows.map(s => `
-    <div class="show" data-open="${s.id}">
-      <img src="${esc(s.artwork)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
-      <div style="flex:1;min-width:0">
-        <div class="t">${esc(s.title)}</div>
-        <div class="s">${unplayedCount(s)} unplayed · ${s.episodes.length} eps</div>
+  const totalUn = state.shows.reduce((a,s) => a + unplayedCount(s), 0);
+  v.innerHTML = `
+    <div class="card shuffle-all" id="shuffleAllCard">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div class="sa-icon">🎲</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:16.5px">Shuffle all shows</div>
+          <div class="small muted">${totalUn} unplayed across ${state.shows.length} shows — one tap, all night</div>
+        </div>
       </div>
-      <span style="font-size:20px;color:var(--muted)">›</span>
-    </div>`).join('') + '</div>';
+    </div>
+    <div class="card" style="padding:4px 12px">
+      ${state.shows.map(s => `
+        <div class="show" data-open="${s.id}" style="border-radius:10px">
+          <img src="${esc(s.artwork)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+          <div style="flex:1;min-width:0">
+            <div class="t">${esc(s.title)}</div>
+            <div class="s">${unplayedCount(s)} unplayed · ${s.episodes.length} eps</div>
+          </div>
+          <span style="font-size:20px;color:var(--muted)">›</span>
+        </div>`).join('')}
+    </div>`;
+  $('#shuffleAllCard').addEventListener('click', shuffleAll);
   v.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => { currentShowId = el.dataset.open; renderAll(); window.scrollTo(0,0); }));
 }
 
@@ -804,8 +840,8 @@ $('#ovSleep').addEventListener('click', openSleepSheet);
 /* ---------- expose a small API (testing & future automation) ---------- */
 window.caster = {
   state, saveState, parseFeed, fetchWithCors, addShowFromRSS, refreshShow, loadBundledShows, renderAll,
-  episodeWeight, pickEpisode, markHeard, markPlayedIfDone,
-  playEpisode, playGuid, shuffleNow, next, skipCurrent, togglePlay,
+  episodeWeight, pickEpisode, pickAcrossShows, markHeard, markPlayedIfDone,
+  playEpisode, playGuid, shuffleNow, shuffleAll, next, skipCurrent, togglePlay,
   searchiTunes, current, showById, unplayedCount,
 };
 

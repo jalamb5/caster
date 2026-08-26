@@ -54,6 +54,9 @@ runtime); bundled shows never need it.
   others exist (no same-episode-twice-tonight).
 - Marked **heard** at 85% consumed (so the one you fell asleep in sinks low
   for a while instead of vanishing); skipping records it too.
+- **Shuffle all**: picks the *show* first, weighted by unplayed count (a show
+  with lots of unheard episodes dominates; an all-heard show still gets a
+  share), then a weighted episode inside it.
 - Tune `freshness` and the guard in ⚙ Settings.
 
 ## Roadmap
@@ -61,7 +64,9 @@ runtime); bundled shows never need it.
 - [x] MVP: add shows (iTunes search or RSS URL), weighted shuffle, continuous
       auto-play, sleep timer, lock-screen controls (Media Session), resume
       position, played tracking
-- [ ] Groupings: shuffle across several shows
+- [x] Shuffle all shows (weighted across the whole library)
+- [ ] Groupings: shuffle across a chosen subset of shows (in-app, beyond
+      "all")
 - [ ] Offline: download a random batch (by episode count or total time)
 - [ ] "Pause when the phone hasn't moved for N minutes" (accelerometer sleep
       detection for Android, where AirPods' iOS-only feature doesn't exist)
