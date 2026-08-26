@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#121216">
+<title>Caster — shuffle your podcasts</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+<style>
+  :root{
+    --bg:#121216; --surface:#1a1a21; --surface2:#22222b; --line:#2c2c36;
+    --text:#e9e6df; --muted:#8f8b98; --accent:#f0a35e; --accent-ink:#1a1208;
+    --danger:#e06060; --ok:#7ec699; --radius:16px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    font-size:16px; line-height:1.45;
+    min-height:100dvh; padding-bottom:92px;
+    -webkit-user-select:none; user-select:none;
+  }
+  .wrap{max-width:520px;margin:0 auto;padding:0 16px;}
+  header{
+    position:sticky; top:0; z-index:20; backdrop-filter:blur(14px);
+    background:rgba(18,18,22,.82); border-bottom:1px solid var(--line);
+  }
+  .head{display:flex;align-items:center;gap:10px;padding:14px 16px;max-width:520px;margin:0 auto;}
+  .head h1{font-size:19px;margin:0;font-weight:700;letter-spacing:.2px;}
+  .head .sp{flex:1;}
+  .chip{
+    border:1px solid var(--line); background:var(--surface); color:var(--muted);
+    border-radius:999px; padding:6px 12px; font-size:13px; cursor:pointer;
+  }
+  .chip.on{color:var(--accent); border-color:var(--accent);}
+  .chip.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600;}
+  .iconbtn{
+    width:38px;height:38px;border-radius:12px;border:1px solid var(--line);
+    background:var(--surface);color:var(--text);font-size:17px;cursor:pointer;display:grid;place-items:center;
+  }
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px;}
+  .muted{color:var(--muted);}
+  .small{font-size:13px;}
+  .empty{text-align:center;padding:48px 20px;color:var(--muted);}
+  .empty .big{font-size:38px;margin-bottom:10px;}
+
+  /* show card */
+  .show{display:flex;gap:12px;align-items:center;cursor:pointer;padding:10px;border-radius:14px;transition:background .15s;}
+  .show:active{background:var(--surface2);}
+  .show img{width:52px;height:52px;border-radius:12px;background:var(--surface2);object-fit:cover;flex:none;}
+  .show .t{font-weight:600;font-size:15px;}
+  .show .s{font-size:13px;color:var(--muted);}
+
+  /* show detail */
+  .detail-head{display:flex;gap:14px;align-items:center;margin:16px 0 4px;}
+  .detail-head img{width:76px;height:76px;border-radius:18px;background:var(--surface2);object-fit:cover;}
+  .detail-head .t{font-size:20px;font-weight:700;line-height:1.2;}
+  .shuffle-btn{
+    width:100%;padding:16px;border-radius:var(--radius);border:none;cursor:pointer;
+    background:var(--accent);color:var(--accent-ink);font-size:17px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;gap:10px;margin:14px 0 6px;
+    box-shadow:0 6px 24px rgba(240,163,94,.25);
+  }
+  .shuffle-btn:active{transform:scale(.985);}
+  .statline{text-align:center;font-size:13px;color:var(--muted);margin:0 0 14px;}
+  .refresh{display:flex;justify-content:flex-end;margin-bottom:8px;}
+  .ep{padding:10px 4px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:10px;align-items:baseline;}
+  .ep:last-child{border-bottom:none;}
+  .ep .title{flex:1;font-size:14.5px;}
+  .ep.heard .title{color:var(--muted);}
+  .ep .dur{font-size:12px;color:var(--muted);flex:none;}
+  .ep .dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--accent);align-self:center;}
+  .ep.heard .dot{background:transparent;}
+
+  /* player bar */
+  .pbar{
+    position:fixed;left:0;right:0;bottom:0;z-index:30;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    background:rgba(26,26,33,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line);
+  }
+  .pbar .inner{max-width:520px;margin:0 auto;display:flex;gap:12px;align-items:center;cursor:pointer;}
+  .pbar img{width:44px;height:44px;border-radius:10px;background:var(--surface2);object-fit:cover;flex:none;}
+  .pbar .meta{flex:1;min-width:0;}
+  .pbar .t{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .pbar .s{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .pbar .ctr{display:flex;gap:6px;align-items:center;}
+  .pbar .ctr button{background:none;border:none;color:var(--text);font-size:20px;cursor:pointer;padding:6px;line-height:1;}
+  .pbar .prog{position:absolute;left:0;right:0;top:0;height:3px;background:var(--line);}
+  .pbar .prog .fill{height:100%;background:var(--accent);width:0%;}
+
+  /* now playing overlay */
+  .overlay{
+    position:fixed;inset:0;z-index:40;background:rgba(10,10,13,.96);backdrop-filter:blur(20px);
+    display:none;flex-direction:column;padding:24px 22px calc(18px + env(safe-area-inset-bottom));
+  }
+  .overlay.open{display:flex;}
+  .overlay .top{display:flex;align-items:center;gap:10px;margin-bottom:18px;}
+  .overlay .art{width:min(62vw,260px);aspect-ratio:1;border-radius:24px;background:var(--surface2);object-fit:cover;margin:2vh auto 18px;display:block;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  .overlay .ot{font-size:19px;font-weight:700;text-align:center;line-height:1.25;}
+  .overlay .os{font-size:14px;color:var(--muted);text-align:center;margin-top:4px;}
+  .track{height:26px;display:flex;align-items:center;cursor:pointer;margin:14px 0 2px;touch-action:none;}
+  .track .rail{position:relative;height:5px;border-radius:99px;background:var(--surface2);flex:1;overflow:visible;}
+  .track .rail .fill{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--accent);}
+  .track .rail .knob{position:absolute;top:50%;width:15px;height:15px;border-radius:50%;background:var(--accent);transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(240,163,94,.25);}
+  .times{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);}
+  .controls{display:flex;justify-content:center;align-items:center;gap:26px;margin:10px 0 4px;}
+  .controls button{background:none;border:none;color:var(--text);cursor:pointer;}
+  .controls .seek{font-size:17px;padding:10px;color:var(--muted);}
+  .controls .skip{font-size:30px;padding:10px;}
+  .controls .pp{font-size:52px;padding:4px;color:var(--accent);}
+  .row{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px;}
+  .row .chip{font-size:13px;}
+
+  /* modal */
+  .modal{
+    position:fixed;inset:0;z-index:50;background:rgba(10,10,13,.8);backdrop-filter:blur(6px);
+    display:none;align-items:flex-end;justify-content:center;
+  }
+  .modal.open{display:flex;}
+  .sheet{background:var(--surface);border:1px solid var(--line);border-radius:22px 22px 0 0;width:100%;max-width:520px;padding:18px 18px calc(18px + env(safe-area-inset-bottom));max-height:86dvh;overflow:auto;}
+  .sheet h2{margin:0 0 12px;font-size:17px;}
+  .sheet .close{float:right;cursor:pointer;color:var(--muted);font-size:20px;padding:2px 6px;}
+  input[type=text],input[type=url],input[type=search]{
+    width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--text);
+    border-radius:12px;padding:12px;font-size:15px;margin:6px 0 10px;outline:none;
+  }
+  input[type=text]:focus,input[type=url]:focus,input[type=search]:focus{border-color:var(--accent);}
+  .searchres{max-height:44dvh;overflow:auto;}
+  .sr{display:flex;gap:10px;align-items:center;padding:8px;border-radius:12px;cursor:pointer;}
+  .sr:active{background:var(--surface2);}
+  .sr img{width:40px;height:40px;border-radius:9px;object-fit:cover;background:var(--surface2);}
+  .sr .t{font-size:14px;font-weight:600;}
+  .sr .s{font-size:12px;color:var(--muted);}
+  .seg{display:flex;background:var(--surface2);border-radius:12px;padding:3px;margin:4px 0 10px;gap:3px;}
+  .seg button{flex:1;border:none;background:none;color:var(--muted);padding:9px;border-radius:9px;font-size:14px;cursor:pointer;}
+  .seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600;}
+  label.f{display:block;font-size:13px;color:var(--muted);margin:12px 0 2px;}
+  input[type=range]{width:100%;accent-color:var(--accent);}
+  .pillrow{display:flex;flex-wrap:wrap;gap:8px;}
+  .pillrow .chip{padding:8px 14px;font-size:14px;}
+  .pillrow .chip.on{color:var(--accent);border-color:var(--accent);}
+  .hint{font-size:12px;color:var(--muted);margin-top:-6px;margin-bottom:10px;}
+  .toast{
+    position:fixed;left:50%;bottom:110px;transform:translateX(-50%);z-index:60;
+    background:var(--surface2);border:1px solid var(--line);color:var(--text);
+    padding:10px 16px;border-radius:99px;font-size:13.5px;opacity:0;pointer-events:none;transition:opacity .25s;
+  }
+  .toast.show{opacity:1;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="head">
+    <h1>🎙️ Caster</h1>
+    <span class="sp"></span>
+    <button class="chip" id="sleepChip" title="Sleep timer">⏾ off</button>
+    <button class="iconbtn" id="addBtn" title="Add a show">＋</button>
+    <button class="iconbtn" id="setBtn" title="Settings">⚙</button>
+  </div>
+</header>
+
+<main class="wrap" id="view"></main>
+
+<!-- player bar -->
+<div class="pbar" id="pbar" style="display:none">
+  <div class="prog"><div class="fill" id="pbarFill"></div></div>
+  <div class="inner" id="pbarOpen">
+    <img id="pbarArt" alt="">
+    <div class="meta">
+      <div class="t" id="pbarTitle"></div>
+      <div class="s" id="pbarShow"></div>
+    </div>
+    <div class="ctr">
+      <button id="pbarSkip" title="Skip to a new random episode">⏭</button>
+      <button id="pbarPlay" title="Play / pause">▶</button>
+    </div>
+  </div>
+</div>
+
+<!-- now playing -->
+<div class="overlay" id="overlay">
+  <div class="top">
+    <button class="iconbtn" id="ovClose">▾</button>
+    <span class="sp" style="flex:1"></span>
+    <button class="chip" id="ovSleep">⏾</button>
+  </div>
+  <img class="art" id="ovArt" alt="">
+  <div class="ot" id="ovTitle"></div>
+  <div class="os" id="ovShow"></div>
+  <div class="track" id="track"><div class="rail"><div class="fill" id="ovFill"></div><div class="knob" id="ovKnob"></div></div></div>
+  <div class="times"><span id="ovCur">0:00</span><span id="ovDur">–:––</span></div>
+  <div class="controls">
+    <button class="seek" id="back15">⟲ 15</button>
+    <button class="pp" id="ovPlay">▶</button>
+    <button class="skip" id="ovNext">⏭</button>
+    <button class="seek" id="fwd30">30 ⟳</button>
+  </div>
+  <div class="row">
+    <button class="chip" id="speedChip">1×</button>
+    <button class="chip" id="restartChip">↺ Restart ep</button>
+    <button class="chip" id="markHeardChip">✓ Mark heard</button>
+  </div>
+</div>
+
+<!-- modal -->
+<div class="modal" id="modal">
+  <div class="sheet">
+    <span class="close" id="modalClose">✕</span>
+    <h2 id="modalTitle">Add a show</h2>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<audio id="audio" preload="none"></audio>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+/* ============================================================
+   Caster — shuffle your podcasts. Single-file PWA.
+   Core idea: weighted random that favours unplayed episodes,
+   never excludes played ones, and keeps rolling all night.
+   ============================================================ */
+
+/* ---------- state & persistence ---------- */
+const LS_KEY = 'caster.v1';
+let state;
+function loadState(){
+  try{ const raw = localStorage.getItem(LS_KEY); if(raw){ state = JSON.parse(raw); } }catch(e){}
+  if(!state || !state.shows) state = { shows:[], settings:{ freshness:60, repeatGuardHours:6, customProxy:'' } };
+  state.settings = Object.assign({ freshness:60, repeatGuardHours:6, customProxy:'' }, state.settings||{});
+}
+function saveState(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ console.warn('save failed', e); } }
+loadState();
+
+const $ = s => document.querySelector(s);
+const audio = $('#audio');
+const now = () => Date.now();
+const day = 864e5;
+
+/* ---------- the algorithm (the heart) ---------- */
+function episodeWeight(ep, t=now()){
+  const heard = ep.isPlayed || (ep.playCount||0) > 0;
+  if(!heard) return 10;                                    // never heard → strong preference
+  const days = Math.max(0, (t - (ep.lastPlayedAt||t)) / day);
+  return 1 + 4 * Math.exp(-days / state.settings.freshness); // decays, never reaches 0 → never excluded
+}
+function pickEpisode(show, excludeGuid, t=now()){
+  const guard = state.settings.repeatGuardHours * 36e5;
+  let pool = (show.episodes||[]).filter(e => e.url && e.guid !== excludeGuid);
+  if(!pool.length) return null;
+  const notFresh = pool.filter(e => e.lastPlayedAt && t - e.lastPlayedAt < guard);
+  if(notFresh.length < pool.length) pool = pool.filter(e => !notFresh.includes(e));
+  const total = pool.reduce((s,e) => s + episodeWeight(e,t), 0);
+  let r = Math.random() * total;
+  for(const e of pool){ r -= episodeWeight(e,t); if(r <= 0) return e; }
+  return pool[pool.length-1];
+}
+function markHeard(ep, t=now()){            // started or skipped → sinks for a while
+  ep.playCount = (ep.playCount||0) + 1;
+  ep.lastPlayedAt = t;
+  if(!ep.isPlayed && ep.position && ep.position > 0 && ep.duration && ep.position/ep.duration >= 0.85){
+    ep.isPlayed = true;
+  }
+}
+function markPlayedIfDone(){
+  const ep = current();
+  if(!ep || !ep.duration || ep.isPlayed) return;
+  if(audio.currentTime / ep.duration >= 0.85){ ep.isPlayed = true; ep.position = 0; saveState(); renderAll(); }
+}
+
+/* ---------- RSS ---------- */
+function parseDuration(s){
+  if(!s) return 0;
+  s = String(s).trim();
+  if(/^\d+$/.test(s)) return parseInt(s,10);
+  const p = s.split(':').map(Number);
+  if(p.length === 3) return p[0]*3600 + p[1]*60 + p[2];
+  if(p.length === 2) return p[0]*60 + p[1];
+  return 0;
+}
+function parseFeed(xml, feedUrl){
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  if(doc.querySelector('parsererror')) throw new Error('Not a valid RSS feed');
+  const ch = doc.querySelector('channel') || doc;
+  // getElementsByTagName matches qualified names (itunes:…) reliably everywhere;
+  // querySelector('itunes\\:duration') namespace handling is browser-dependent.
+  const qn = (node, name) => { const els = node.getElementsByTagName(name); return els.length ? els[0] : null; };
+  const txt = (node, name) => { const n = qn(node, name); return n ? n.textContent.trim() : ''; };
+  const title = txt(ch, 'title') || feedUrl;
+  const author = txt(ch, 'itunes:author') || txt(ch, 'dc:creator');
+  let artwork = '';
+  const iimg = qn(ch, 'itunes:image');
+  if(iimg) artwork = iimg.getAttribute('href') || '';
+  if(!artwork){ const imgel = qn(ch, 'image'); if(imgel) artwork = txt(imgel, 'url'); }
+  const episodes = [];
+  const seen = new Set();
+  const items = doc.getElementsByTagName('item');
+  for(let i = 0; i < items.length; i++){
+    const item = items[i];
+    const t = txt(item, 'title');
+    const enc = qn(item, 'enclosure') || qn(item, 'media:content');
+    const url = enc ? enc.getAttribute('url') : '';
+    if(!url) continue;
+    let guid = txt(item, 'guid') || url;
+    guid = guid.trim();
+    if(seen.has(guid)) continue; seen.add(guid);
+    const dur = parseDuration(txt(item, 'itunes:duration'));
+    const pd = txt(item, 'pubDate');
+    episodes.push({
+      guid, title: t, url,
+      duration: dur, pubDate: pd ? new Date(pd).getTime() : 0,
+      isPlayed:false, playCount:0, lastPlayedAt:0, position:0
+    });
+  }
+  episodes.sort((a,b) => (b.pubDate||0) - (a.pubDate||0));
+  return { title, author, artwork, episodes };
+}
+
+/* ---------- fetch with CORS fallback chain ----------
+   Order: direct → same-origin /fetch (serve.py) → public proxies → custom.
+   Each attempt gets its own timeout so one dead proxy can't eat the budget. */
+async function fetchWithCors(url){
+  const attempts = [
+    ['direct', url],
+    ['local', '/fetch?url=' + encodeURIComponent(url)],
+    ['allorigins', 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url)],
+    ['corsproxy', 'https://corsproxy.io/?url=' + encodeURIComponent(url)],
+    ['codetabs', 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url)],
+  ];
+  if(state.settings.customProxy) attempts.push(['custom', state.settings.customProxy + encodeURIComponent(url)]);
+  let lastErr;
+  for(const [name, u] of attempts){
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 12000);
+    try{
+      const r = await fetch(u, {signal: ac.signal});
+      clearTimeout(t);
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if(/^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) throw new Error('got HTML, not a feed');
+      return {kind: name, text};
+    }catch(e){ clearTimeout(t); lastErr = e; }
+  }
+  throw new Error('Could not fetch the feed (CORS). Run "python3 serve.py" in ~/repos/caster and use the same URL, or set a custom proxy in Settings.');
+}
+
+/* ---------- iTunes search (JSONP — no CORS needed) ---------- */
+function searchiTunes(term){
+  return new Promise((resolve, reject) => {
+    const cb = '__cb' + Math.random().toString(36).slice(2);
+    let done = false;
+    const cleanup = () => { delete window[cb]; const s = document.getElementById('itunesScript'); if(s) s.remove(); };
+    window[cb] = d => { if(done) return; done = true; cleanup(); resolve(d.results || []); };
+    const s = document.createElement('script');
+    s.id = 'itunesScript';
+    s.src = 'https://itunes.apple.com/search?media=podcast&limit=24&term=' + encodeURIComponent(term) + '&callback=' + cb;
+    s.onerror = () => { if(done) return; done = true; cleanup(); reject(new Error('Search failed')); };
+    document.head.appendChild(s);
+    setTimeout(() => { if(done) return; done = true; cleanup(); reject(new Error('Search timed out')); }, 12000);
+  });
+}
+
+/* ---------- show management ---------- */
+function findShow(feedUrl){ return state.shows.find(s => s.feedUrl === feedUrl); }
+function showById(id){ return state.shows.find(s => s.id === id); }
+async function addShowFromRSS(feedUrl){
+  feedUrl = feedUrl.trim();
+  if(!/^https?:\/\//i.test(feedUrl)) throw new Error('Feed URL must start with http(s)://');
+  const existing = findShow(feedUrl);
+  if(existing) return existing.id;                 // already subscribed — just return it
+  const { text } = await fetchWithCors(feedUrl);
+  const parsed = parseFeed(text, feedUrl);
+  const show = {
+    id: 's' + Math.random().toString(36).slice(2,9),
+    title: parsed.title, author: parsed.author, artwork: parsed.artwork,
+    feedUrl, episodes: parsed.episodes,
+  };
+  state.shows.push(show);
+  saveState();
+  return show.id;
+}
+async function refreshShow(id){
+  const show = showById(id); if(!show) return;
+  const { text } = await fetchWithCors(show.feedUrl);
+  const parsed = parseFeed(text, show.feedUrl);
+  const byGuid = new Map(show.episodes.map(e => [e.guid, e]));
+  show.title = parsed.title; show.author = parsed.author; show.artwork = parsed.artwork || show.artwork;
+  parsed.episodes.forEach(ne => {
+    const old = byGuid.get(ne.guid);
+    if(old) Object.assign(ne, { isPlayed:old.isPlayed, playCount:old.playCount, lastPlayedAt:old.lastPlayedAt, position:old.position });
+  });
+  show.episodes = parsed.episodes;
+  saveState();
+}
+
+/* ---------- player ---------- */
+let currentShowId = null;
+let currentGuid = null;
+let speed = 1;
+let sleepTimer = null;   // {mode:'minutes', at, ms} | {mode:'end'} | null
+let posSaveTimer = null;
+let lastProgress = 0;
+let lastPosSave = 0;
+
+const current = () => currentShowId ? showById(currentShowId)?.episodes.find(e => e.guid === currentGuid) : null;
+
+function fmt(sec){
+  if(!isFinite(sec) || sec < 0) return '–:––';
+  sec = Math.floor(sec);
+  const h = Math.floor(sec/3600), m = Math.floor(sec%3600/60), s = sec%60;
+  return h ? h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0')
+           : m + ':' + String(s).padStart(2,'0');
+}
+
+async function playEpisode(show, ep, {reset=false}={}){
+  currentShowId = show.id; currentGuid = ep.guid;
+  audio.src = ep.url;
+  audio.playbackRate = speed;
+  const pos = (!reset && ep.position && isFinite(ep.position)) ? ep.position : 0;
+  audio.currentTime = pos;
+  markHeard(ep);
+  saveState();
+  try{ await audio.play(); }catch(e){ toast('Playback blocked — tap play'); }
+  updateMediaSession();
+  renderAll();
+}
+
+function playGuid(showId, guid, opts){
+  const show = showById(showId); if(!show) return;
+  const ep = show.episodes.find(e => e.guid === guid); if(!ep) return;
+  playEpisode(show, ep, opts);
+}
+
+function next(){
+  const show = showById(currentShowId); if(!show) return;
+  if(sleepTimer && sleepTimer.mode === 'end'){ pause('sleep'); clearSleepTimer(); return; }
+  const ep = pickEpisode(show, currentGuid);
+  if(!ep){ toast('No playable episodes'); return; }
+  playEpisode(show, ep);
+}
+
+function shuffleNow(showId){
+  const show = showById(showId); if(!show) return;
+  const ep = pickEpisode(show);
+  if(!ep){ toast('No playable episodes in this show'); return; }
+  playEpisode(show, ep);
+}
+
+function pause(reason){
+  audio.pause();
+  if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused';
+  renderAll();
+}
+
+function togglePlay(){
+  if(audio.paused){ audio.play().catch(()=>{}); if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; }
+  else pause();
+  renderAll();
+}
+
+function skipCurrent(){                 // user skips → hears nothing more; keep it in rotation but sink it
+  const ep = current(); if(ep) markHeard(ep);
+  saveState(); next();
+}
+
+/* ---------- media session (lock screen / notification controls) ---------- */
+function updateMediaSession(){
+  if(!('mediaSession' in navigator)) return;
+  const ep = current(); const show = showById(currentShowId);
+  if(!ep || !show) return;
+  const ms = navigator.mediaSession;
+  const art = show.artwork ? [{ src: show.artwork, sizes: '512x512', type: 'image/jpeg' }] : [];
+  ms.metadata = new MediaMetadata({ title: ep.title || 'Episode', artist: show.title || 'Podcast', album: 'Caster', artwork: art });
+  ms.playbackState = audio.paused ? 'paused' : 'playing';
+  ms.setActionHandler('play', () => togglePlay());
+  ms.setActionHandler('pause', () => pause());
+  ms.setActionHandler('previoustrack', () => { const ep = current(); if(ep && audio.currentTime > 5) audio.currentTime = 0; else if(ep) playEpisode(showById(currentShowId), ep, {reset:true}); });
+  ms.setActionHandler('nexttrack', () => skipCurrent());
+  ms.setActionHandler('seekbackward', d => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 15)); });
+  ms.setActionHandler('seekforward', d => { audio.currentTime = Math.min(audio.duration||1e9, audio.currentTime + (d.seekOffset || 30)); });
+  ms.setActionHandler('seekto', d => { if(d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime); else audio.currentTime = d.seekTime; });
+  const push = () => { try{ ms.setPositionState({ duration: audio.duration || 0, position: audio.currentTime || 0, playbackRate: audio.playbackRate }); }catch(e){} };
+  push(); setTimeout(push, 500);
+}
+
+/* ---------- sleep timer ---------- */
+function setSleepTimer(mode, ms){
+  sleepTimer = mode === 'end' ? {mode:'end'} : {mode:'minutes', at: now(), ms};
+  if(sleepTimer.mode === 'minutes') setTimeout(() => { if(sleepTimer && sleepTimer.mode === 'minutes' && now() >= sleepTimer.at + sleepTimer.ms) { pause('sleep'); clearSleepTimer(); } }, Math.min(ms, 2**31-1));
+  renderAll();
+}
+function clearSleepTimer(){ sleepTimer = null; renderAll(); }
+function sleepLabel(){
+  if(!sleepTimer) return 'off';
+  if(sleepTimer.mode === 'end') return 'end of ep';
+  return Math.max(1, Math.ceil((sleepTimer.at + sleepTimer.ms - now())/60000)) + 'm';
+}
+
+/* ---------- UI ---------- */
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let toastTimer;
+function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200); }
+
+function unplayedCount(show){ return (show.episodes||[]).filter(e => !e.isPlayed && !(e.playCount>0)).length; }
+
+function renderAll(){
+  renderHome(); renderShowDetail(); renderPlayerBar(); renderOverlay(); renderSleepChip();
+}
+
+function renderHome(){
+  const v = $('#view');
+  if(!state.shows.length){
+    v.innerHTML = '<div class="empty"><div class="big">🎙️</div><div class="muted">No shows yet.<br>Add a podcast and Caster will shuffle it for you.<br><br><button class="chip primary" id="emptyAdd">＋ Add a show</button></div></div>';
+    $('#emptyAdd')?.addEventListener('click', openAddModal);
+    return;
+  }
+  v.innerHTML = '<div class="card">' + state.shows.map(s => `
+    <div class="show" data-open="${s.id}">
+      <img src="${esc(s.artwork)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div style="flex:1;min-width:0">
+        <div class="t">${esc(s.title)}</div>
+        <div class="s">${unplayedCount(s)} unplayed · ${s.episodes.length} eps</div>
+      </div>
+      <span style="font-size:20px;color:var(--muted)">›</span>
+    </div>`).join('') + '</div>';
+  v.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => { currentShowId = el.dataset.open; renderAll(); window.scrollTo(0,0); }));
+}
+
+function renderShowDetail(){
+  const show = showById(currentShowId); if(!show) return;
+  const un = unplayedCount(show), pl = show.episodes.length - un;
+  const heard = show.episodes.filter(e => e.isPlayed || e.playCount>0);
+  const oldestHeard = heard.length ? Math.min(...heard.map(e => e.lastPlayedAt || now())) : null;
+  const hint = oldestHeard ? Math.max(1, Math.round((now()-oldestHeard)/day)) + 'd since you last heard one' : 'nothing heard yet';
+  const eps = show.episodes.slice(0, 200);
+  $('#view').innerHTML = `
+    <div style="margin:10px 0 2px"><button class="chip" id="backBtn">‹ Shows</button></div>
+    <div class="detail-head">
+      <img src="${esc(show.artwork)}" alt="" onerror="this.style.visibility='hidden'">
+      <div>
+        <div class="t">${esc(show.title)}</div>
+        <div class="muted small">${esc(show.author||'')}</div>
+      </div>
+    </div>
+    <button class="shuffle-btn" id="shuffleBtn">🎲 &nbsp;Shuffle this show</button>
+    <p class="statline">${un} unplayed · ${pl} heard — ${hint}</p>
+    <div class="refresh"><button class="chip" id="refreshBtn">↻ Refresh feed</button></div>
+    <div class="card" style="padding:4px 12px">
+      ${eps.map(e => `
+        <div class="ep ${e.isPlayed || e.playCount>0 ? 'heard' : ''}" data-guid="${esc(e.guid)}">
+          <span class="dot"></span>
+          <span class="title">${esc(e.title)}</span>
+          <span class="dur">${e.duration ? fmt(e.duration) : ''}</span>
+        </div>`).join('') || '<div class="muted small" style="padding:10px 4px">No episodes found.</div>'}
+    </div>`;
+  $('#shuffleBtn').addEventListener('click', () => shuffleNow(show.id));
+  $('#backBtn').addEventListener('click', () => { currentShowId = null; renderAll(); window.scrollTo(0,0); });
+  $('#refreshBtn').addEventListener('click', async e => { e.target.textContent = '↻ Refreshing…'; try{ await refreshShow(show.id); toast('Feed updated'); }catch(err){ toast('Refresh failed'); } renderAll(); });
+  $('#view').querySelectorAll('.ep').forEach(el => el.addEventListener('click', () => playGuid(show.id, el.dataset.guid)));
+}
+
+function renderPlayerBar(){
+  const bar = $('#pbar');
+  const ep = current();
+  if(!ep){ bar.style.display = 'none'; return; }
+  const show = showById(currentShowId);
+  bar.style.display = 'block';
+  $('#pbarArt').src = show.artwork;
+  $('#pbarTitle').textContent = ep.title || '';
+  $('#pbarShow').textContent = show.title || '';
+  $('#pbarPlay').textContent = audio.paused ? '▶' : '❚❚';
+}
+
+function renderOverlay(){
+  const ep = current(); const open = $('#overlay').classList.contains('open');
+  if(!ep){ $('#overlay').classList.remove('open'); return; }
+  const show = showById(currentShowId);
+  $('#ovArt').src = show.artwork;
+  $('#ovTitle').textContent = ep.title || '';
+  $('#ovShow').textContent = show.title || '';
+  $('#ovPlay').textContent = audio.paused ? '▶' : '❚❚';
+  $('#speedChip').textContent = speed + '×';
+  const dur = audio.duration || ep.duration || 0;
+  const pct = dur ? audio.currentTime/dur*100 : 0;
+  $('#ovFill').style.width = pct + '%';
+  $('#ovKnob').style.left = pct + '%';
+  $('#pbarFill').style.width = pct + '%';
+  $('#ovCur').textContent = fmt(audio.currentTime);
+  $('#ovDur').textContent = fmt(dur);
+  lastProgress = audio.currentTime;
+}
+
+function renderSleepChip(){
+  $('#sleepChip').textContent = '⏾ ' + sleepLabel();
+  $('#sleepChip').classList.toggle('on', !!sleepTimer);
+  $('#ovSleep').textContent = '⏾ ' + sleepLabel();
+  $('#ovSleep').classList.toggle('on', !!sleepTimer);
+}
+
+/* ---------- modals ---------- */
+function openModal(title, bodyHtml, after){
+  $('#modalTitle').textContent = title;
+  $('#modalBody').innerHTML = bodyHtml;
+  $('#modal').classList.add('open');
+  if(after) after();
+}
+function closeModal(){ $('#modal').classList.remove('open'); }
+
+function openAddModal(){
+  openModal('Add a show', `
+    <div class="seg" id="addSeg">
+      <button class="on" data-tab="search">Search</button>
+      <button data-tab="rss">RSS link</button>
+    </div>
+    <div id="addPane"></div>`, () => {
+    const seg = $('#addSeg');
+    const pane = $('#addPane');
+    const showTab = which => {
+      seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === which));
+      pane.innerHTML = which === 'search'
+        ? `<input type="search" id="searchInput" placeholder="Search Apple Podcasts… e.g. The Flophouse">
+           <div class="searchres" id="searchRes"></div>`
+        : `<input type="url" id="rssInput" placeholder="https://…/feed.xml">
+           <button class="chip primary" id="rssGo" style="width:100%">Add show</button>
+           <p class="hint" style="margin-top:8px">Paste any podcast RSS feed — including private Patreon audio feeds.</p>`;
+      if(which === 'search'){
+        const inp = $('#searchInput');
+        let t;
+        inp.addEventListener('input', () => { clearTimeout(t); t = setTimeout(doSearch, 350); });
+        inp.addEventListener('keydown', e => { if(e.key === 'Enter'){ clearTimeout(t); doSearch(); } });
+        async function doSearch(){
+          const q = inp.value.trim(); if(q.length < 2) return;
+          const res = $('#searchRes'); res.innerHTML = '<div class="muted small">Searching…</div>';
+          try{
+            const hits = await searchiTunes(q);
+            res.innerHTML = hits.length ? hits.map(h => `
+              <div class="sr" data-feed="${esc(h.feedUrl)}">
+                <img src="${esc(h.artworkUrl100||'')}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+                <div style="flex:1;min-width:0"><div class="t">${esc(h.collectionName)}</div><div class="s">${esc(h.artistName||'')}</div></div>
+              </div>`).join('') : '<div class="muted small">No results.</div>';
+            res.querySelectorAll('.sr').forEach(el => el.addEventListener('click', async () => {
+              el.style.opacity = '.5';
+              try{ const id = await addShowFromRSS(el.dataset.feed); closeModal(); toast('Added ✓'); showById(id) && (currentShowId = id); renderAll(); }
+              catch(err){ toast('Could not add that show'); el.style.opacity = '1'; }
+            }));
+          }catch(e){ res.innerHTML = '<div class="muted small">Search failed — check your connection.</div>'; }
+        }
+      } else {
+        $('#rssGo').addEventListener('click', async () => {
+          const val = $('#rssInput').value.trim(); if(!val) return;
+          try{
+            const id = await addShowFromRSS(val);
+            closeModal(); toast('Added ✓');
+            showById(id) && (currentShowId = id); renderAll();
+          }catch(err){ toast(err.message || 'Could not add that show'); }
+        });
+      }
+    };
+    seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+    showTab('search');
+  });
+}
+
+function openSettingsModal(){
+  const s = state.settings;
+  openModal('Settings', `
+    <label class="f">Old favourites resurface after (freshness)</label>
+    <input type="range" id="freshRange" min="7" max="365" step="1" value="${s.freshness}">
+    <p class="hint" id="freshLabel">~${s.freshness} days since last heard → back to full strength</p>
+    <label class="f">Don't repeat within</label>
+    <input type="range" id="guardRange" min="1" max="24" step="1" value="${s.repeatGuardHours}">
+    <p class="hint" id="guardLabel">${s.repeatGuardHours} hour(s) — stops the same episode coming back tonight</p>
+    <label class="f">Custom CORS proxy (optional — e.g. your own Mini proxy)</label>
+    <input type="text" id="proxyInput" placeholder="https://…/fetch?url=" value="${esc(s.customProxy)}">
+    <p class="hint">Leave blank for auto (direct → allorigins → corsproxy). Point at your own proxy to keep feed fetches private.</p>
+  `, () => {
+    const fresh = $('#freshRange'), guard = $('#guardRange');
+    fresh.addEventListener('input', () => { state.settings.freshness = +fresh.value; $('#freshLabel').textContent = '~' + fresh.value + ' days since last heard → back to full strength'; saveState(); });
+    guard.addEventListener('input', () => { state.settings.repeatGuardHours = +guard.value; $('#guardLabel').textContent = guard.value + ' hour(s) — stops the same episode coming back tonight'; saveState(); });
+    $('#proxyInput').addEventListener('change', e => { state.settings.customProxy = e.target.value.trim(); saveState(); });
+  });
+}
+
+/* ---------- sleep sheet ---------- */
+function openSleepSheet(){
+  openModal('Sleep timer', `
+    <div class="pillrow">
+      <button class="chip ${sleepTimer && sleepTimer.mode==='end' ? 'on' : ''}" data-sleep="end">End of episode</button>
+      <button class="chip ${sleepTimer && sleepTimer.mode==='minutes' && sleepTimer.ms===15*6e4 ? 'on' : ''}" data-sleep="15">15 min</button>
+      <button class="chip ${sleepTimer && sleepTimer.mode==='minutes' && sleepTimer.ms===30*6e4 ? 'on' : ''}" data-sleep="30">30 min</button>
+      <button class="chip ${sleepTimer && sleepTimer.mode==='minutes' && sleepTimer.ms===45*6e4 ? 'on' : ''}" data-sleep="45">45 min</button>
+      <button class="chip ${sleepTimer && sleepTimer.mode==='minutes' && sleepTimer.ms===60*6e4 ? 'on' : ''}" data-sleep="60">60 min</button>
+      <button class="chip ${sleepTimer && sleepTimer.mode==='minutes' && sleepTimer.ms===90*6e4 ? 'on' : ''}" data-sleep="90">90 min</button>
+      <button class="chip" data-sleep="off">Off</button>
+    </div>
+    <p class="hint">On Android, Caster keeps playing with the screen locked. For automatic pause-when-asleep, /e/OS battery tools or an app like Sleep Timer can also stop playback — or just set 45 minutes and drift off.</p>
+  `, () => {
+    $('#modalBody').querySelectorAll('[data-sleep]').forEach(b => b.addEventListener('click', () => {
+      const v = b.dataset.sleep;
+      if(v === 'off') clearSleepTimer();
+      else if(v === 'end') setSleepTimer('end');
+      else setSleepTimer('minutes', +v * 6e4);
+      closeModal(); renderAll(); toast('Sleep: ' + sleepLabel());
+    }));
+  });
+}
+
+/* ---------- events ---------- */
+audio.addEventListener('ended', next);
+audio.addEventListener('timeupdate', () => {
+  markPlayedIfDone();
+  if(now() - lastProgress > 500){ renderOverlay(); lastProgress = now(); }
+  if(now() - lastPosSave > 4000){ lastPosSave = now(); const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); } }
+});
+audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; renderPlayerBar(); renderOverlay(); });
+audio.addEventListener('pause', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused'; renderPlayerBar(); renderOverlay(); });
+audio.addEventListener('loadedmetadata', () => { updateMediaSession(); renderOverlay(); });
+window.addEventListener('pagehide', () => { const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); } });
+
+setInterval(() => { if(sleepTimer) renderSleepChip(); }, 30000);
+
+$('#addBtn').addEventListener('click', openAddModal);
+$('#setBtn').addEventListener('click', openSettingsModal);
+$('#sleepChip').addEventListener('click', openSleepSheet);
+$('#modalClose').addEventListener('click', closeModal);
+$('#modal').addEventListener('click', e => { if(e.target === $('#modal')) closeModal(); });
+
+$('#pbarOpen').addEventListener('click', () => $('#overlay').classList.add('open'));
+$('#ovClose').addEventListener('click', () => $('#overlay').classList.remove('open'));
+$('#pbarPlay').addEventListener('click', e => { e.stopPropagation(); togglePlay(); });
+$('#pbarSkip').addEventListener('click', e => { e.stopPropagation(); skipCurrent(); });
+$('#ovPlay').addEventListener('click', togglePlay);
+$('#ovNext').addEventListener('click', skipCurrent);
+$('#back15').addEventListener('click', () => { audio.currentTime = Math.max(0, audio.currentTime - 15); });
+$('#fwd30').addEventListener('click', () => { audio.currentTime = Math.min(audio.duration||1e9, audio.currentTime + 30); });
+$('#restartChip').addEventListener('click', () => { const ep = current(); if(ep) playEpisode(showById(currentShowId), ep, {reset:true}); });
+$('#markHeardChip').addEventListener('click', () => { const ep = current(); if(ep){ markHeard(ep); saveState(); toast('Marked heard — it will fade for a while'); renderAll(); } });
+$('#speedChip').addEventListener('click', () => {
+  const speeds = [1, 1.2, 1.5, 2, 0.8];
+  speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length];
+  audio.playbackRate = speed;
+  try{ navigator.mediaSession && navigator.mediaSession.setPositionState({ duration: audio.duration||0, position: audio.currentTime||0, playbackRate: speed }); }catch(e){}
+  renderOverlay();
+});
+$('#ovSleep').addEventListener('click', openSleepSheet);
+
+/* seek track */
+(function(){
+  const track = $('#track');
+  let dragging = false;
+  function seekFrom(e){
+    const r = track.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const dur = audio.duration || 0;
+    if(dur) audio.currentTime = frac * dur;
+  }
+  track.addEventListener('pointerdown', e => { dragging = true; track.setPointerCapture(e.pointerId); seekFrom(e); });
+  track.addEventListener('pointermove', e => { if(dragging) seekFrom(e); });
+  track.addEventListener('pointerup', () => { dragging = false; });
+})();
+
+/* ---------- expose a small API (testing & future automation) ---------- */
+window.caster = {
+  state, saveState, parseFeed, fetchWithCors, addShowFromRSS, refreshShow,
+  episodeWeight, pickEpisode, markHeard, markPlayedIfDone,
+  playEpisode, playGuid, shuffleNow, next, skipCurrent, togglePlay,
+  searchiTunes, current, showById, unplayedCount,
+};
+
+renderAll();
+</script>
+</body>
+</html>
