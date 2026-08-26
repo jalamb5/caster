@@ -1,14 +1,19 @@
 {
-  "name": "Caster — shuffle your podcasts",
+  "name": "Caster \u2014 shuffle your podcasts",
   "short_name": "Caster",
   "description": "Weighted-random podcast shuffle: favours episodes you've never heard, never excludes the ones you have.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#121216",
-  "theme_color": "#121216",
+  "background_color": "#16120a",
+  "theme_color": "#16120a",
   "icons": [
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
   ]
 }
