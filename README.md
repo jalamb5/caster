@@ -22,23 +22,10 @@ the browser never hits CORS walls and no third-party proxy sees your feeds.
 
 Hosted at https://jalamb5.github.io/caster/. Pages is static-only, so the
 same-origin `/fetch` proxy is **not** available there — adding a show falls
-back to the public CORS proxies (can be flaky) or to a custom proxy you set in
-⚙ Settings. Playback, shuffle, sleep timer, and lock-screen controls work the
-same; already-saved shows work offline of any proxy.
-
-### Self-hosted proxy (recommended)
-
-The Mac Mini runs a tiny fetch service (see `casterfetch` in the Mini's
-`~/Repos/vaultwarden` docker-compose). In Caster ⚙ Settings → **Custom CORS
-proxy**, set:
-
-```
-https://192.168.1.162/caster-fetch?url=
-```
-
-Works on home Wi-Fi; the phone must trust the local CA
-(`~/Downloads/vaultwarden-local-ca.crt`). Off-LAN it falls back to the public
-proxies.
+back to the public CORS proxies (can be flaky). Playback, shuffle, sleep
+timer, and lock-screen controls work the same; already-saved shows work
+offline of any proxy. (The optional Settings → Custom CORS proxy field exists
+for pointing at your own fetch service if you ever want one.)
 
 ## How the algorithm works
 
