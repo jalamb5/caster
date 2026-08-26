@@ -26,6 +26,20 @@ back to the public CORS proxies (can be flaky) or to a custom proxy you set in
 ⚙ Settings. Playback, shuffle, sleep timer, and lock-screen controls work the
 same; already-saved shows work offline of any proxy.
 
+### Self-hosted proxy (recommended)
+
+The Mac Mini runs a tiny fetch service (see `casterfetch` in the Mini's
+`~/Repos/vaultwarden` docker-compose). In Caster ⚙ Settings → **Custom CORS
+proxy**, set:
+
+```
+https://192.168.1.162/caster-fetch?url=
+```
+
+Works on home Wi-Fi; the phone must trust the local CA
+(`~/Downloads/vaultwarden-local-ca.crt`). Off-LAN it falls back to the public
+proxies.
+
 ## How the algorithm works
 
 - **Unplayed** episodes: weight 10.
