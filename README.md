@@ -18,6 +18,14 @@ Open `http://localhost:8765` on this Mac, or `http://<this-mac-ip>:8765` from
 your phone on the same Wi-Fi. The `/fetch` endpoint fetches RSS server-side so
 the browser never hits CORS walls and no third-party proxy sees your feeds.
 
+## GitHub Pages
+
+Hosted at https://jalamb5.github.io/caster/. Pages is static-only, so the
+same-origin `/fetch` proxy is **not** available there — adding a show falls
+back to the public CORS proxies (can be flaky) or to a custom proxy you set in
+⚙ Settings. Playback, shuffle, sleep timer, and lock-screen controls work the
+same; already-saved shows work offline of any proxy.
+
 ## How the algorithm works
 
 - **Unplayed** episodes: weight 10.
