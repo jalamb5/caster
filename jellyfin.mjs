@@ -173,7 +173,7 @@ export class JellyfinClient {
     this.userId = userId;
     this.accessToken = accessToken;
     this.deviceId = deviceId;
-    this.fetchImpl = fetchImpl;
+    this.fetchImpl = (...args) => fetchImpl(...args);
   }
 
   static async checkServer({ serverUrl, fetchImpl = fetch }) {
