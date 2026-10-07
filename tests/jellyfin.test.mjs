@@ -46,6 +46,24 @@ test('sign-in gives an actionable hint when the browser cannot read Jellyfin', a
   }), /allow https:\/\/jalamb5\.github\.io.*CORS settings/i);
 });
 
+test('sign-in keeps HTTP 401 distinct from a browser transport failure', async () => {
+  await assert.rejects(JellyfinClient.authenticate({
+    serverUrl:'https://jellyfin.example.test', username:'justin', password:'wrong-password', deviceId:'d',
+    fetchImpl:async()=>({ok:false,status:401}),
+  }), /Jellyfin sign-in failed/);
+});
+
+test('server reachability probe reports whether the public endpoint responds', async () => {
+  await assert.doesNotReject(JellyfinClient.checkServer({
+    serverUrl:'https://jellyfin.example.test',
+    fetchImpl:async()=>({ok:true,status:200}),
+  }));
+  await assert.rejects(JellyfinClient.checkServer({
+    serverUrl:'https://jellyfin.example.test',
+    fetchImpl:async()=>{throw new TypeError('Failed to fetch')},
+  }), /Could not read Jellyfin's public server status.*CORS/i);
+});
+
 test('authenticated API requests send the token in Authorization, never in the URL', async () => {
   let request;
   const client = new JellyfinClient({

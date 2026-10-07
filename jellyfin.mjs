@@ -176,6 +176,17 @@ export class JellyfinClient {
     this.fetchImpl = fetchImpl;
   }
 
+  static async checkServer({ serverUrl, fetchImpl = fetch }) {
+    const base = normalizeServerUrl(serverUrl);
+    try {
+      const response = await fetchImpl(`${base}/System/Info/Public`, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return true;
+    } catch {
+      throw new Error("Could not read Jellyfin's public server status. Check the URL, network, and server CORS settings.");
+    }
+  }
+
   static async authenticate({ serverUrl, username, password, deviceId, fetchImpl = fetch }) {
     const base = normalizeServerUrl(serverUrl);
     if (!String(username ?? '').trim()) throw new Error('Enter your Jellyfin username');
