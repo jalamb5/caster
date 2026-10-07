@@ -1,7 +1,7 @@
 {
-  "name": "Caster \u2014 shuffle your podcasts",
+  "name": "Caster — podcasts and audiobooks",
   "short_name": "Caster",
-  "description": "Weighted-random podcast shuffle: favours episodes you've never heard, never excludes the ones you have.",
+  "description": "Shuffle podcasts or listen to Jellyfin audiobooks in order with a resumable position.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
