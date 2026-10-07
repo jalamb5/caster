@@ -101,6 +101,7 @@ Why: Audiobooks should continue chapter-to-chapter and resume where listening st
 - 2026-10-07: Use actual PlaybackInfo session/source IDs in playback reports. Never invent a session ID or report a guessed zero position.
 ## Verification
 - Preflight browser/API evidence and sanitized outcomes are in `.hermes/plans/2026-10-07_202316-caster-jellyfin-audiobooks.md`.
-- The user had five in-progress chapter positions before probes; all five read back unchanged after cleanup. Temporary chapter `THE BOY WHO LIVED` was restored to `PlaybackPositionTicks: 0`, `Played: false`, `PlayCount: 0` and verified.
-- Current implementation tests: `node --test tests/*.test.mjs`; static syntax check: `node --check jellyfin.mjs` and the inline module check. Real browser verification is pending; this feature is not deployed.
+- All 28 automated tests pass; `node --check` passes for the Jellyfin client and tests; manifest JSON and inline-module parse checks pass; `git diff --check` passes.
+- Commit `e87108b` is on `main`; remote Pages build is still `building`. The live site returned old content and `/jellyfin.mjs` returned 404 at the last probe, so a cache-busted real-browser test and Jellyfin read-back remain pending; the published feature is not ready to test yet.
+- No browser sign-in, live audiobook playback, or progress write was performed by this implementation turn. Prior catalogue/stream probes did not modify the five existing resume positions and restored the single temporary test chapter.
 - At close, replace this note with compact provenance stubs for each closed claim; no progress claim closes without the probes in Test Strategy.
