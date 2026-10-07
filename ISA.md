@@ -63,6 +63,7 @@ Why: Caster must show only the seven intended books and their correctly ordered 
 - [ ] ISC-5: The authenticated request discovers exactly the Harry Potter parent folder and its seven book subfolders.
 - [ ] ISC-6: Every book's chapter list is complete and ordered by filename chapter number, with duplicates/gaps detected and surfaced.
 - [ ] ISC-7: Loading, error, empty, and populated states stay scoped to the Harry Potter catalogue; inaccessible non-HP items are never requested for display.
+- [ ] ISC-14: Invalid Jellyfin URL is rejected before any authentication or catalogue request.
 
 ### F2 · Linear playback and resume
 Why: Audiobooks should continue chapter-to-chapter and resume where listening stopped without entering podcast shuffle.
@@ -91,6 +92,7 @@ Why: Audiobooks should continue chapter-to-chapter and resume where listening st
 | ISC-11 | curl | Read-after-write verifies exact user, item and resume position; no stale/zero report | same ticks, played false | authenticated API read-back pending | literal |
 | ISC-12 | bash | No browser storage writes audiobook positions | zero writes | `node --test tests/caster-mode.test.mjs` | literal |
 | ISC-13 | bash | Token persistence audit finds no browser-storage writes | zero writes | `node --test tests/caster-mode.test.mjs` | literal |
+| ISC-14 | unit-test | Invalid server URL causes no authentication or catalogue request | 0 requests | `node --test tests/caster-mode.test.mjs` | literal |
 
 ## Decisions
 - 2026-10-07: Jellyfin server URL is supplied by the person connecting; do not publish a personal server hostname in this public repo.

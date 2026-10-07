@@ -531,6 +531,13 @@ async function connectJellyfin(serverUrl, username, password){
   audiobookLibraryState = 'loading'; audiobookError = ''; renderAll();
   try{
     audiobookServerUrl = normalizeServerUrl(serverUrl);
+  }catch(error){
+    audiobookLibraryState='error';
+    audiobookError=error?.message || 'Invalid Jellyfin server URL';
+    renderAll();
+    throw error;
+  }
+  try{
     const client = await JellyfinClient.authenticate({serverUrl:audiobookServerUrl,username,password,deviceId:createDeviceId()});
     const profile = await client.request(`/Users/${encodeURIComponent(client.userId)}`);
     const catalogue = await client.getHarryPotterBooks();
