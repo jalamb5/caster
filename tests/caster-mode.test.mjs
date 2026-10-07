@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl } from '../jellyfin.mjs';
+import { nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient } from '../jellyfin.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const manifest = JSON.parse(await readFile(new URL('../manifest.webmanifest', import.meta.url), 'utf8'));
@@ -52,7 +52,7 @@ function bootCaster(source=script.replace(/^import .*;\s*/m, '').replace(/render
   const window = {scrollTo(){}, addEventListener(){}, location:{href:'https://example.test/'} };
   const navigator = {mediaSession:{setPositionState(){},setActionHandler(){},playbackState:'paused'}};
   const context = vm.createContext({
-    document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl,
+    document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient,
     localStorage:{get length(){return store.size},getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k),key:i=>Array.from(store.keys())[i]??null,[Symbol.iterator]:function*(){for(const entry of store)yield entry}},
     sessionStorage:{getItem:k=>store.get(`session:${k}`)??null,setItem:(k,v)=>store.set(`session:${k}`,String(v)),removeItem:k=>store.delete(`session:${k}`)},
     fetch:async()=>({ok:false,status:404,json:async()=>({})}),
@@ -111,7 +111,7 @@ test('Jellyfin access tokens are never written to browser storage', () => {
 });
 
 test('Jellyfin server address is supplied at sign-in, not published as a personal default', () => {
-  assert.doesNotMatch(script,/https:\/\/jellyfin\.lambharbour\.com/i);
+  assert.match(script,/const JELLYFIN_DEFAULT_SERVER = ''/);
   assert.match(script,/id="jfServer"/);
   assert.match(script,/connectJellyfin\(server,user,password\)/);
 });
@@ -129,6 +129,15 @@ test('an invalid server URL is shown in the form without sending a request', asy
   const value=await result;
   assert.equal(value.sent,0);
   assert.match(value.error,/valid HTTP\(S\) URL/);
+});
+
+test('blank Jellyfin credentials are reported before a request', async () => {
+  const {context}=bootCaster();
+  const fetchCalls=[];
+  context.fetch=async(...args)=>{fetchCalls.push(args);throw new Error('must not fetch')};
+  const value=await vm.runInContext(`connectJellyfin('https://jellyfin.example.test','   ','password').catch(()=>audiobookError)`,context);
+  assert.equal(fetchCalls.length,0);
+  assert.match(value,/Enter your Jellyfin username/);
 });
 
 test('resume position does not overwrite Jellyfin user data in browser storage', () => {

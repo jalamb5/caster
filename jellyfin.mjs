@@ -1,4 +1,3 @@
-const HARRY_POTTER_ROOT_PATTERN = /^J K Rowling - Harry Potter 1-7 Unabridged Audiobooks Narrated by Stephen Fry$/i;
 const HARRY_POTTER_BOOK_PATTERN = /^[1-7] HARRY POTTER (?:AND|ANND) .+$/i;
 const TICKS_PER_SECOND = 10_000_000;
 const DEFAULT_SERVER_URL = '';
@@ -49,12 +48,6 @@ export function buildApiUrl(serverUrl, path, params = {}) {
 export function findAudiobooksLibrary(views) {
   return (Array.isArray(views) ? views : []).find(view =>
     view?.Name === 'Audiobooks' && view?.Type === 'CollectionFolder' && view?.CollectionType === 'books'
-  ) ?? null;
-}
-
-export function findHarryPotterFolder(items) {
-  return (Array.isArray(items) ? items : []).find(item =>
-    item?.Type === 'Folder' && HARRY_POTTER_ROOT_PATTERN.test(String(item.Name ?? '').trim())
   ) ?? null;
 }
 
@@ -165,6 +158,10 @@ const jellyfinHttpError = status => {
   return new Error(`Jellyfin request failed (HTTP ${status})`);
 };
 
+const jellyfinNetworkError = () => new Error(
+  "Couldn't read a response from Jellyfin. Check the server URL and network, and allow https://jalamb5.github.io in Jellyfin's CORS settings."
+);
+
 function requireSuccess(response) {
   if(!response.ok) throw jellyfinHttpError(response.status);
   return response;
@@ -181,6 +178,8 @@ export class JellyfinClient {
 
   static async authenticate({ serverUrl, username, password, deviceId, fetchImpl = fetch }) {
     const base = normalizeServerUrl(serverUrl);
+    if (!String(username ?? '').trim()) throw new Error('Enter your Jellyfin username');
+    if (typeof password !== 'string' || password.length === 0) throw new Error('Enter your Jellyfin password');
     const authHeader = `MediaBrowser ${[
       `Client=${quoteHeaderValue('Caster')}`,
       `Device=${quoteHeaderValue('Web browser')}`,
@@ -195,7 +194,7 @@ export class JellyfinClient {
         body: JSON.stringify({ Username: username, Pw: password }),
       });
     } catch {
-      throw new Error('Could not reach Jellyfin. Check the server URL and network connection.');
+      throw jellyfinNetworkError();
     }
     if (!response.ok) throw response.status === 401 ? new Error('Jellyfin sign-in failed') : jellyfinHttpError(response.status);
     let result;
@@ -225,7 +224,7 @@ export class JellyfinClient {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
-      throw new Error('Could not reach Jellyfin. Check the server URL and network connection.');
+      throw jellyfinNetworkError();
     }
     requireSuccess(response);
     const text = await response.text();
@@ -239,18 +238,23 @@ export class JellyfinClient {
     const roots = await this.request('/Items', {
       params: { ParentId: library.Id, Recursive: false, Fields: 'Path', Limit: 1000 },
     });
-    const root = findHarryPotterFolder(roots.Items);
-    if (!root?.Id) throw new Error('Harry Potter audiobook folder was not found in the Audiobooks library');
-    const booksResult = await this.request('/Items', {
-      params: { ParentId: root.Id, Recursive: false, Fields: 'Path', Limit: 1000 },
-    });
-    const bookFolders = (booksResult.Items ?? [])
-      .filter(item => item.Type === 'Folder' && isHarryPotterBookFolder(item.Name))
-      .sort((a, b) => Number(a.Name[0]) - Number(b.Name[0]));
-    const bookNumbers = bookFolders.map(folder => Number(folder.Name[0]));
-    if (bookFolders.length !== 7 || bookNumbers.some((number,index)=>number!==index+1)) {
-      throw new Error(`Expected the seven numbered Harry Potter book folders; found ${bookFolders.length}`);
+    let root = null;
+    let bookFolders = [];
+    for (const candidate of roots.Items ?? []) {
+      if(candidate?.Type !== 'Folder' || !candidate.Id) continue;
+      const children = await this.request('/Items', {
+        params: { ParentId: candidate.Id, Recursive: false, Fields: 'Path', Limit: 1000 },
+      });
+      const numbered = (children.Items ?? [])
+        .filter(item => item.Type === 'Folder' && isHarryPotterBookFolder(item.Name))
+        .sort((a, b) => Number(a.Name[0]) - Number(b.Name[0]));
+      if (numbered.length === 7 && numbered.every((folder,index) => Number(folder.Name[0]) === index+1)) {
+        root = candidate;
+        bookFolders = numbered;
+        break;
+      }
     }
+    if (!root?.Id) throw new Error('Could not identify a Harry Potter series folder in the Audiobooks library');
 
     const books = [];
     for (const folder of bookFolders) {

@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Caster">
 <meta name="theme-color" content="#16120a">
 <meta name="color-scheme" content="dark">
-<title>Caster — shuffle your podcasts</title>
+<title>Caster — podcasts and audiobooks</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
@@ -531,6 +531,8 @@ async function connectJellyfin(serverUrl, username, password){
   audiobookLibraryState = 'loading'; audiobookError = ''; renderAll();
   try{
     audiobookServerUrl = normalizeServerUrl(serverUrl);
+    if(!String(username ?? '').trim()) throw new Error('Enter your Jellyfin username.');
+    if(typeof password !== 'string' || password.length === 0) throw new Error('Enter your Jellyfin password.');
   }catch(error){
     audiobookLibraryState='error';
     audiobookError=error?.message || 'Invalid Jellyfin server URL';

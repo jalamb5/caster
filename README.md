@@ -26,6 +26,13 @@ RSS at runtime, so there's no CORS, no proxy, and nothing to go flaky.
 Playback uses each episode's audio URL directly, which works cross-origin.
 Already-saved shows work offline.
 
+Audiobook sign-in connects directly from your browser to your HTTPS Jellyfin
+server. Enter the server URL, Jellyfin username and password; Caster finds the
+Harry Potter series folder by its seven numbered book folders, so you do not
+need to know its exact parent-folder name. The password is not saved and the
+access token stays in memory only. If the browser cannot read Jellyfin's
+response, allow `https://jalamb5.github.io` in the server's CORS settings.
+
 ### Refreshing show data
 
 New episodes appear when `feeds.json` is regenerated and pushed:

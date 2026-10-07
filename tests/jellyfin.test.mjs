@@ -5,7 +5,6 @@ import {
   buildMediaBrowserHeader,
   buildApiUrl,
   findAudiobooksLibrary,
-  findHarryPotterFolder,
   isHarryPotterBookFolder,
   normalizeChapters,
   ticksToSeconds,
@@ -22,6 +21,31 @@ test('device IDs are generated in memory and never require browser storage', () 
   assert.ok(createDeviceId());
 });
 
+test('sign-in rejects a blank username before making a network request', async () => {
+  let requests = 0;
+  await assert.rejects(JellyfinClient.authenticate({
+    serverUrl:'https://jellyfin.example.test', username:'   ', password:'not-empty', deviceId:'d',
+    fetchImpl:async()=>{requests++;throw new Error('must not fetch');},
+  }), /Enter your Jellyfin username/);
+  assert.equal(requests,0);
+});
+
+test('sign-in rejects an empty password before making a network request', async () => {
+  let requests = 0;
+  await assert.rejects(JellyfinClient.authenticate({
+    serverUrl:'https://jellyfin.example.test', username:'justin', password:'', deviceId:'d',
+    fetchImpl:async()=>{requests++;throw new Error('must not fetch');},
+  }), /Enter your Jellyfin password/);
+  assert.equal(requests,0);
+});
+
+test('sign-in gives an actionable hint when the browser cannot read Jellyfin', async () => {
+  await assert.rejects(JellyfinClient.authenticate({
+    serverUrl:'https://jellyfin.example.test', username:'justin', password:'password', deviceId:'d',
+    fetchImpl:async()=>{throw new TypeError('Failed to fetch');},
+  }), /allow https:\/\/jalamb5\.github\.io.*CORS settings/i);
+});
+
 test('authenticated API requests send the token in Authorization, never in the URL', async () => {
   let request;
   const client = new JellyfinClient({
@@ -36,8 +60,8 @@ test('authenticated API requests send the token in Authorization, never in the U
   assert.doesNotMatch(request.url, /secret-token|api_key/i);
 });
 
-test('catalogue traversal filters exact Harry Potter root and seven book folders', async () => {
-  const hpRoot = { Id: 'hp-root', Name: 'J K Rowling - Harry Potter 1-7 Unabridged Audiobooks Narrated by Stephen Fry', Type: 'Folder' };
+test('catalogue discovers the numbered series without asking for its parent folder name', async () => {
+  const hpRoot = { Id: 'series-root', Name: 'Private series folder', Type: 'Folder' };
   const seven = Array.from({length:7}, (_, i) => ({ Id:`b${i+1}`, Name:`${i+1} HARRY POTTER AND BOOK ${i+1}`, Type:'Folder' }));
   const requests = [];
   const client = new JellyfinClient({
@@ -46,8 +70,9 @@ test('catalogue traversal filters exact Harry Potter root and seven book folders
       const parsed = new URL(url); requests.push(parsed);
       let payload;
       if(parsed.pathname.endsWith('/UserViews')) payload={Items:[{Id:'library',Name:'Audiobooks',Type:'CollectionFolder',CollectionType:'books'}]};
-      else if(parsed.searchParams.get('ParentId')==='library') payload={Items:[{...hpRoot},{Id:'else',Name:'Harry Potter movies',Type:'Folder'}]};
-      else if(parsed.searchParams.get('ParentId')==='hp-root') payload={Items:[...seven,{Id:'8',Name:'8 HARRY POTTER EXTRA',Type:'Folder'}]};
+      else if(parsed.searchParams.get('ParentId')==='library') payload={Items:[{...hpRoot},{Id:'else',Name:'Other shelf',Type:'Folder'}]};
+      else if(parsed.searchParams.get('ParentId')==='series-root') payload={Items:[...seven,{Id:'8',Name:'8 HARRY POTTER EXTRA',Type:'Folder'}]};
+      else if(parsed.searchParams.get('ParentId')==='else') payload={Items:[{Id:'unrelated',Name:'Unrelated folder',Type:'Folder'}]};
       else {
         const folder = seven.find(book => book.Id === parsed.searchParams.get('ParentId'));
         payload={Items:[{Id:`chapter-${folder.Id}`,Name:'CHAPTER',Type:'AudioBook',Path:`/fake/${folder.Name}/CH01 CHAPTER.mp3`,RunTimeTicks:10000000,MediaSources:[{Id:`source-${folder.Id}`,Container:'mp3'}]}]};
@@ -56,25 +81,54 @@ test('catalogue traversal filters exact Harry Potter root and seven book folders
     },
   });
   const result=await client.getHarryPotterBooks();
-  assert.equal(result.rootId,'hp-root');
+  assert.equal(result.rootId,'series-root');
   assert.equal(result.books.length,7);
   assert.equal(result.books[0].title,'HARRY POTTER AND BOOK 1');
   assert.equal(result.books[0].chapters.length,1);
   assert.ok(requests.every(u=>!u.searchParams.has('api_key')));
+  assert.ok(requests.filter(u=>u.pathname.endsWith('/Items')).every(u=>u.searchParams.get('Recursive')==='false'));
 });
 
-test('catalogue fails closed rather than accepting other folders or incomplete series', async () => {
+test('catalogue fails closed when no direct child contains the numbered seven-book series', async () => {
+  const requestedParents=[];
   const client = new JellyfinClient({
     serverUrl:'https://jellyfin.example.test', userId:'u', accessToken:'t', deviceId:'d',
     fetchImpl:async url => {
       const parsed=new URL(url);
-      const payload=parsed.pathname.endsWith('/UserViews')
-        ? {Items:[{Id:'l',Name:'Audiobooks',Type:'CollectionFolder',CollectionType:'books'}]}
-        : {Items:[{Id:'other',Name:'Harry Potter movies',Type:'Folder'}]};
+      if(parsed.pathname.endsWith('/UserViews')) return {ok:true,status:200,text:async()=>JSON.stringify({Items:[{Id:'l',Name:'Audiobooks',Type:'CollectionFolder',CollectionType:'books'}]})};
+      const parent=parsed.searchParams.get('ParentId'); requestedParents.push(parent);
+      const payload=parent==='l'
+        ? {Items:[{Id:'other',Name:'Other shelf',Type:'Folder'}]}
+        : {Items:[{Id:'nope',Name:'Unrelated folder',Type:'Folder'}]};
       return {ok:true,status:200,text:async()=>JSON.stringify(payload)};
     },
   });
-  await assert.rejects(client.getHarryPotterBooks(),/Harry Potter audiobook folder was not found/);
+  await assert.rejects(client.getHarryPotterBooks(),/could not identify a Harry Potter series folder/i);
+  assert.deepEqual(requestedParents,['l','other']);
+});
+
+test('series detection ignores non-series folders and returns only the seven numbered book children', async () => {
+  const seven=Array.from({length:7},(_,i)=>({Id:`b${i+1}`,Name:`${i+1} HARRY POTTER AND BOOK ${i+1}`,Type:'Folder'}));
+  const requests=[];
+  const client=new JellyfinClient({
+    serverUrl:'https://jellyfin.example.test',userId:'u',accessToken:'t',deviceId:'d',
+    fetchImpl:async url=>{
+      const parsed=new URL(url),parent=parsed.searchParams.get('ParentId');requests.push(parent);
+      let payload;
+      if(parsed.pathname.endsWith('/UserViews')) payload={Items:[{Id:'library',Name:'Audiobooks',Type:'CollectionFolder',CollectionType:'books'}]};
+      else if(parent==='library') payload={Items:[{Id:'other',Name:'Other shelf',Type:'Folder'},{Id:'series',Name:'Private parent',Type:'Folder'}]};
+      else if(parent==='other') payload={Items:[{Id:'unrelated',Name:'Unrelated',Type:'Folder'}]};
+      else if(parent==='series') payload={Items:[...seven,{Id:'extra',Name:'8 HARRY POTTER EXTRA',Type:'Folder'}]};
+      else {const book=seven.find(item=>item.Id===parent);payload={Items:[{Id:`chapter-${parent}`,Name:'CHAPTER',Type:'AudioBook',Path:`/fake/${book.Name}/CH01 CHAPTER.mp3`,RunTimeTicks:10000000}]};}
+      return {ok:true,status:200,text:async()=>JSON.stringify(payload)};
+    },
+  });
+  const result=await client.getHarryPotterBooks();
+  assert.equal(result.rootId,'series');
+  assert.equal(result.books.length,7);
+  assert.deepEqual(requests.slice(0,4),[null,'library','other','series']);
+  assert.equal(requests.slice(4).length,7);
+  assert.ok(requests.slice(4).every(id=>/^b[1-7]$/.test(id)));
 });
 
 test('server URL accepts HTTPS and rejects insecure remote origins', () => {
@@ -104,19 +158,13 @@ test('API URLs encode query parameters and never append authentication', () => {
   assert.doesNotMatch(url, /token|api_key|secret/i);
 });
 
-test('library and Harry Potter root selection fail closed', () => {
-  const views = [
-    { Id: 'other', Name: 'Comics', Type: 'CollectionFolder' },
-    { Id: 'books', Name: 'Audiobooks', Type: 'CollectionFolder', CollectionType: 'books' },
+test('library selection is constrained to the audiobook collection', () => {
+  const views=[
+    {Id:'podcasts',Name:'Podcasts',Type:'CollectionFolder',CollectionType:'tvshows'},
+    {Id:'books',Name:'Audiobooks',Type:'CollectionFolder',CollectionType:'books'},
   ];
-  assert.equal(findAudiobooksLibrary(views).Id, 'books');
-  assert.equal(findAudiobooksLibrary([{ Id: 'x', Name: 'Audiobooks', Type: 'UserView' }]), null);
-  const folders = [
-    { Id: 'hp', Name: 'J K Rowling - Harry Potter 1-7 Unabridged Audiobooks Narrated by Stephen Fry', Type: 'Folder' },
-    { Id: 'other', Name: 'Harry Potter documentaries', Type: 'Folder' },
-  ];
-  assert.equal(findHarryPotterFolder(folders).Id, 'hp');
-  assert.equal(findHarryPotterFolder([{ Id: 'other', Name: 'Harry Potter documentaries', Type: 'Folder' }]), null);
+  assert.equal(findAudiobooksLibrary(views).Id,'books');
+  assert.equal(findAudiobooksLibrary([{Id:'wrong',Name:'Audiobooks',Type:'UserView'}]),null);
 });
 
 test('book-folder filter accepts only the numbered seven-book folder pattern', () => {
