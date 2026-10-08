@@ -66,7 +66,7 @@ export function genericNormalizeChapters(items) {
       id: item.Id,
       title: String(item.Name ?? ''),
       path: String(item.Path ?? ''),
-      chapterNumber: item.IndexNumber || chapterNumber(item.Path) || (index + 1),
+      chapterNumber: chapterNumber(item.Path) || item.IndexNumber || (index + 1),
       runTimeTicks: Number.isFinite(Number(item.RunTimeTicks)) ? Number(item.RunTimeTicks) : 0,
       positionTicks: Number.isFinite(Number(item.UserData?.PlaybackPositionTicks))
         ? Number(item.UserData.PlaybackPositionTicks) : 0,
