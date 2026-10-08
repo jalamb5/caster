@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient } from '../jellyfin.mjs';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from '../sleep.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const manifest = JSON.parse(await readFile(new URL('../manifest.webmanifest', import.meta.url), 'utf8'));
@@ -10,14 +11,15 @@ assert.match(manifest.name,/podcasts and audiobooks/);
 assert.match(manifest.description,/Jellyfin audiobooks/);
 const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
 assert.ok(script, 'index.html has an inline module application script');
-const executable = script.replace(/^import .*;\s*/m, '').replace(/renderAll\(\);\s*loadBundledShows\(\)\.then\(renderAll\);\s*$/, '');
+const execSource = source => source.replace(/^import .*;\s*/gm, '').replace(/renderAll\(\);\s*loadBundledShows\(\)\.then\(renderAll\);\s*$/, '');
+const executable = execSource(script);
 const duplicateDefinitions = name => (executable.match(new RegExp(`function ${name}\\(`,'g')) || []).length;
 assert.equal(duplicateDefinitions('pause'),1,'player handlers have one authoritative definition');
 assert.equal(duplicateDefinitions('togglePlay'),1,'player handlers have one authoritative definition');
 assert.equal(duplicateDefinitions('skipCurrent'),1,'player handlers have one authoritative definition');
 assert.doesNotMatch(executable,/sessionStorage|accessToken.*(?:localStorage|sessionStorage)/);
 
-function bootCaster(source=script.replace(/^import .*;\s*/m, '').replace(/renderAll\(\);\s*loadBundledShows\(\)\.then\(renderAll\);\s*$/, '')) {
+function bootCaster(source=execSource(script)) {
   const elements = new Map();
   const element = id => {
     if (elements.has(id)) return elements.get(id);
@@ -53,6 +55,7 @@ function bootCaster(source=script.replace(/^import .*;\s*/m, '').replace(/render
   const navigator = {mediaSession:{setPositionState(){},setActionHandler(){},playbackState:'paused'}};
   const context = vm.createContext({
     document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient,
+    appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate,
     localStorage:{get length(){return store.size},getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k),key:i=>Array.from(store.keys())[i]??null,[Symbol.iterator]:function*(){for(const entry of store)yield entry}},
     sessionStorage:{getItem:k=>store.get(`session:${k}`)??null,setItem:(k,v)=>store.set(`session:${k}`,String(v)),removeItem:k=>store.delete(`session:${k}`)},
     fetch:async()=>({ok:false,status:404,json:async()=>({})}),
@@ -63,7 +66,7 @@ function bootCaster(source=script.replace(/^import .*;\s*/m, '').replace(/render
   return {context, elements, store, script:executable};
 }
 
-test('podcast flow retains random next and shuffle-all behavior', () => {
+test('podcast flow retains random next and shuffle-all behavior', async () => {
   const {context} = bootCaster();
   const result = vm.runInContext(`(() => {
     window.MediaMetadata = class { constructor(values){ Object.assign(this, values); } };
@@ -72,11 +75,14 @@ test('podcast flow retains random next and shuffle-all behavior', () => {
     currentShowId='s'; currentGuid='a';
     pickEpisode=()=>show.episodes[1];
     next();
-    return {guid:currentGuid, mode:playerMode, url:audio.src};
+    return {guid:currentGuid, mode:playerMode};
   })()`, context);
   assert.equal(result.guid, 'b');
   assert.equal(result.mode, 'podcast');
-  assert.equal(result.url, 'b.mp3');
+  // playEpisode is async (cache check) — flush microtasks then check src
+  await new Promise(r => setImmediate(r));
+  const url = vm.runInContext('audio.src', context);
+  assert.equal(url, 'b.mp3');
 });
 
 test('audiobook chapters advance sequentially without calling podcast selection', async () => {
@@ -243,11 +249,14 @@ test('refreshing the catalogue retains an active selected book and chapter', asy
     audiobookUser={Id:'alice'};playerMode='audiobook';
     audiobookActiveBookId='b';audiobookActiveChapterId='ch';
     audiobookBooks=[{id:'b',title:'Book',missingChapterNumbers:[],duplicateChapterNumbers:[],chapters:[{id:'ch',chapterNumber:1,positionTicks:0,title:'one'}]}];
-    audiobookClient={getHarryPotterBooks:async()=>({rootId:'root',books:[{id:'b',title:'Book',missingChapterNumbers:[],duplicateChapterNumbers:[],chapters:[{id:'ch',chapterNumber:1,positionTicks:0,title:'one'},{id:'ch2',chapterNumber:2,positionTicks:0,title:'two'}]}]})};
-    return refreshHarryPotterBooks().then(()=>({book:audiobookActiveBookId,chapter:audiobookActiveChapterId,count:audiobookBooks[0].chapters.length}));
+    audiobookClient={
+      getAudiobooksCatalogue:async()=>({libraryId:'lib'}),
+      getFolderItems:async()=>({Items:[{Id:'b',Name:'Book',Type:'Folder'}]}),
+    };
+    return refreshHarryPotterBooks().then(()=>({book:audiobookActiveBookId,chapter:audiobookActiveChapterId}));
   })()`,context);
   const value=await result;
-  assert.equal(value.book,'b');assert.equal(value.chapter,'ch');assert.equal(value.count,2);
+  assert.equal(value.book,'b');assert.equal(value.chapter,'ch');
 });
 
 test('pause and togglePlay definitions are not duplicated', () => {

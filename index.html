@@ -239,6 +239,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 
 <script type="module">
 import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=2';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -664,8 +665,9 @@ const currentShow = () => playerMode === 'audiobook'
   ? audiobooksNav.find(i => i.id === audiobookActiveBookId) || null
   : showById(currentShowId) || null;
 function audiobookResumeTarget(book){
-  if(!book || !Array.isArray(book.chapters)) return null;
-  const candidates = book.chapters.filter(ch=>!ch.played && ch.positionTicks>0);
+  const chapters = book?.chapters || book?.items;
+  if(!chapters || !Array.isArray(chapters)) return null;
+  const candidates = chapters.filter(ch=>!ch.played && ch.positionTicks>0);
   if(!candidates.length) return null;
   candidates.sort((a,b)=>(b.lastPlayedDate||'').localeCompare(a.lastPlayedDate||''));
   return {book,chapter:candidates[0],positionTicks:candidates[0].positionTicks};
@@ -844,8 +846,8 @@ function chapterById(bookId, chapterId){
   return bookById(bookId)?.chapters.find(ch=>ch.id===chapterId) || null;
 }
 function currentAudiobookChapter(){ return chapterById(audiobookActiveBookId,audiobookActiveChapterId); }
-function getCurrentChapters(){
-  const hpBook = bookById(audiobookActiveBookId);
+function getCurrentChapters(bookId = audiobookActiveBookId){
+  const hpBook = bookById(bookId);
   if(hpBook) return hpBook.chapters;
   return audiobooksNav;
 }
@@ -946,14 +948,14 @@ function playAudiobook(bookId,chapterId,{positionTicks,autoplay=true}={}){
   startAudiobookSession({ id: bookId }, chapter, {positionTicks,autoplay});
 }
 function resumeAudiobook(bookId){
-  const chapters = getCurrentChapters();
+  const chapters = getCurrentChapters(bookId);
   if(!chapters.length) return;
   const resume = audiobookResumeTarget({ items: chapters });
   if(!resume) return;
   playAudiobook(bookId, resume.chapter.id, {positionTicks: resume.positionTicks, autoplay: true});
 }
 function nextAudiobookChapter(){
-  if(sleepTimer && sleepTimer.mode==='end'){pause('sleep');clearSleepTimer();return;}
+  if(sleepTimer && sleepTimer.mode==='end'){try{appendEvent('timer');}catch(e){}pause('sleep');clearSleepTimer();return;}
   const chapter = currentAudiobookChapter();
   if(!chapter) return;
   const chapters = getCurrentChapters();
@@ -1025,7 +1027,7 @@ function playGuid(showId, guid, opts){
 function next(){
   if(playerMode === 'audiobook'){ nextAudiobookChapter(); return; }
   const show = showById(currentShowId); if(!show) return;
-  if(sleepTimer && sleepTimer.mode === 'end'){ pause('sleep'); clearSleepTimer(); return; }
+  if(sleepTimer && sleepTimer.mode === 'end'){ try{appendEvent('timer');}catch(e){} pause('sleep'); clearSleepTimer(); return; }
   const ep = pickEpisode(show, currentGuid);
   if(!ep){ toast('No playable episodes'); return; }
   playEpisode(show, ep);
@@ -1097,7 +1099,7 @@ function updateMediaSession(){
 /* ---------- sleep timer ---------- */
 function setSleepTimer(mode, ms){
   sleepTimer = mode === 'end' ? {mode:'end'} : {mode:'minutes', at: now(), ms};
-  if(sleepTimer.mode === 'minutes') setTimeout(() => { if(sleepTimer && sleepTimer.mode === 'minutes' && now() >= sleepTimer.at + sleepTimer.ms) { pause('sleep'); clearSleepTimer(); } }, Math.min(ms, 2**31-1));
+  if(sleepTimer.mode === 'minutes') setTimeout(() => { if(sleepTimer && sleepTimer.mode === 'minutes' && now() >= sleepTimer.at + sleepTimer.ms) { try{ appendEvent('timer'); }catch(e){} pause('sleep'); clearSleepTimer(); } }, Math.min(ms, 2**31-1));
   renderAll();
 }
 function clearSleepTimer(){ sleepTimer = null; renderAll(); }
@@ -1113,6 +1115,30 @@ function audiobookArtUrl(){
   const id = audiobookActiveBookId;
   if(!id) return '';
   return audiobookServerUrl + '/Items/' + encodeURIComponent(id) + '/Images/Primary?width=512';
+}
+// Sleep summary for the morning card
+const SLEEP_DISMISS_KEY = 'caster.sleep.dismissed';
+function getLastNightSummary(){
+  const events = loadEvents();
+  if(!events.length) return null;
+  const nights = groupEventsByNight(events);
+  const now = Date.now();
+  const todayKey = localDate(now);
+  const todayHours = new Date(now).getHours();
+  // Find the most recent night that is not today
+  const sortedKeys = [...nights.keys()].sort();
+  const lastKey = sortedKeys.findLast(k => k !== todayKey) || null;
+  if(!lastKey) return null;
+  // Only show in the morning window (4:00–12:00)
+  if(todayHours < 4 || todayHours >= 12) return null;
+  // Check dismiss
+  try{
+    const dismissed = localStorage.getItem(SLEEP_DISMISS_KEY);
+    if(dismissed === todayKey) return null;
+  }catch(e){}
+  const result = analyzeNight(nights.get(lastKey));
+  if(!result || !result.awakenings) return null;
+  return { date: lastKey, summary: summarizeNight(result), analysis: result };
 }
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let toastTimer;
@@ -1142,11 +1168,17 @@ function renderHome(){
     return;
   }
   const totalUn = state.shows.reduce((a,s) => a + unplayedCount(s), 0);
+  const sleepCard = (() => {
+    const s = getLastNightSummary();
+    if(!s) return '';
+    return `<div class="card shuffle-all" id="sleepCard" style="margin-top:12px"><div style="display:flex;align-items:center;gap:14px"><div class="sa-icon">🌙</div><div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16.5px">Last night</div><div class="small muted mono">${esc(s.summary)}</div></div><button class="chip" id="sleepDismiss" title="Dismiss for today">✕</button></div></div>`;
+  })();
   v.innerHTML = `
     <div class="row" style="margin:6px 0 12px;justify-content:stretch">
       <button class="chip primary" id="modePodcasts" style="flex:1">🎙 Podcasts</button>
       <button class="chip" id="modeBooks" style="flex:1">📚 Audiobooks</button>
     </div>
+    ${sleepCard}
     <div class="card shuffle-all" id="shuffleAllCard">
       <div style="display:flex;align-items:center;gap:14px">
         <div class="sa-icon">🎲</div>
@@ -1170,6 +1202,10 @@ function renderHome(){
   $('#modePodcasts').addEventListener('click', () => { playerMode='podcast'; currentShowId=null; currentGuid=null; renderAll(); });
   $('#modeBooks').addEventListener('click', openAudiobookView);
   $('#shuffleAllCard').addEventListener('click', shuffleAll);
+  $('#sleepDismiss')?.addEventListener('click', () => {
+    try{ localStorage.setItem(SLEEP_DISMISS_KEY, localDate(Date.now())); }catch(e){}
+    const card = $('#sleepCard'); if(card) card.remove();
+  });
   v.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => { currentShowId = el.dataset.open; renderAll(); window.scrollTo(0,0); }));
 }
 
@@ -1416,6 +1452,7 @@ function openSettingsModal(){
     <input type="text" id="proxyInput" placeholder="https://…/fetch?url=" value="${esc(s.customProxy)}">
     <p class="hint">Leave blank for auto (direct → allorigins → corsproxy). Point at your own proxy to keep feed fetches private.</p>
     <p class="hint" id="bundledDate">${state.bundledUpdated ? 'Bundled show data: updated ' + esc(new Date(state.bundledUpdated).toLocaleDateString()) + '.' : ''}</p>
+    <div id="sleepTrend"></div>
   `, () => {
     const fresh = $('#freshRange'), guard = $('#guardRange');
     fresh.addEventListener('input', () => { state.settings.freshness = +fresh.value; $('#freshLabel').textContent = '~' + fresh.value + ' days since last heard → back to full strength'; saveState(); });
@@ -1423,7 +1460,30 @@ function openSettingsModal(){
     $('#proxyInput').addEventListener('change', e => { state.settings.customProxy = e.target.value.trim(); saveState(); });
     const bd = $('#bundledDate');
     if(bd && state.bundledUpdated) bd.textContent = 'Bundled show data: updated ' + new Date(state.bundledUpdated).toLocaleDateString() + ' — run refresh_feeds.py and push to refresh.';
+    renderSleepTrend();
   });
+}
+
+/* ---------- sleep trend (last 7 nights, from playback interaction log) ---------- */
+function renderSleepTrend(){
+  const el = $('#sleepTrend');
+  if(!el) return;
+  const events = loadEvents();
+  pruneOldEvents();
+  const nights = groupEventsByNight(events);
+  if(!nights.size){
+    el.innerHTML = `<p class="hint">No sleep tracking data yet — use the sleep timer and play in the evening; Caster records playback-free quiet periods.</p>`;
+    return;
+  }
+  const sorted = [...nights.keys()].sort();
+  const recent = sorted.slice(-7).reverse();
+  const rows = recent.map(key => {
+    const analysis = analyzeNight(nights.get(key));
+    if(!analysis) return null;
+    const a = analysis.awakenings;
+    return `<div style="display:flex;align-items:center;gap:8px;margin:3px 0"><span class="muted mono" style="width:70px;flex:none">${key.slice(5)}</span><div style="flex:1;background:var(--surface2);border-radius:4px;height:14px;overflow:hidden"><div style="width:${Math.min(100, a * 20)}%;height:100%;background:var(--accent);border-radius:4px"></div></div><span class="mono" style="width:24px;text-align:right">${a}</span></div>`;
+  }).filter(Boolean).join('');
+  el.innerHTML = `<label class="f">Estimated awakenings — last 7 nights</label>${rows}<p class="hint">From Caster tap/timer times only (local, on-device). Empty bar = no night listening.</p>`;
 }
 
 /* ---------- sleep sheet ---------- */
@@ -1465,7 +1525,7 @@ audio.addEventListener('timeupdate', () => {
   if(now() - lastProgress > 500){ renderOverlay(); lastProgress = now(); }
   if(now() - lastPosSave > 4000){ lastPosSave = now(); const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); } }
 });
-audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') scheduleAudiobookProgress(); });
+audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') scheduleAudiobookProgress(); try{ appendEvent('play'); }catch(e){} });
 audio.addEventListener('pause', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') cancelAudiobookReportTimer(); });
 audio.addEventListener('loadedmetadata', () => { applyAudiobookResumePosition(); updateMediaSession(); renderOverlay(); });
 window.addEventListener('pagehide', () => {
@@ -1554,6 +1614,7 @@ window.caster = {
   playEpisode, playGuid, shuffleNow, shuffleAll, next, skipCurrent, togglePlay,
   searchiTunes, current, showById, unplayedCount,
   startDownload, removeDownload, downloadRandomBatch, isDownloaded, dlState,
+  sleep: { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight },
 };
 
 renderAll();
