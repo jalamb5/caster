@@ -685,7 +685,11 @@ async function navigateAudiobooksToRoot(){
   try{
     const cat = await audiobookClient.getAudiobooksCatalogue();
     const items = await audiobookClient.getFolderItems(cat.libraryId);
-    audiobooksNav = (items.Items || []).map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
+    // Only show the folders the user cares about for sleep listening
+    const keep = new Set(['Bill Bryson', 'Terry Pratchett', 'J K Rowling - Harry Potter 1-7 Unabridged Audiobooks Narrated by Stephen Fry']);
+    audiobooksNav = (items.Items || [])
+      .filter(i => i.Type === 'Folder' && keep.has(i.Name))
+      .map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
     audiobooksNavParentId = null;
     audiobooksNavBack = [];
     audiobooksNavTitle = 'Audiobooks';
