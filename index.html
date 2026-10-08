@@ -370,6 +370,13 @@ async function loadBundledShows(){
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
+    const activeFeeds = new Set(data.shows.map(s => s.feedUrl));
+    // Remove bundled shows that were removed from feeds.json
+    if(state.bundledFeeds){
+      const oldBundle = new Set(state.bundledFeeds);
+      state.shows = state.shows.filter(s => !oldBundle.has(s.feedUrl) || activeFeeds.has(s.feedUrl));
+    }
+    state.bundledFeeds = [...activeFeeds];
     for(const bs of data.shows || []){
       const ex = state.shows.find(s => s.feedUrl === bs.feedUrl);
       const oldMap = ex ? new Map(ex.episodes.map(e => [e.guid, e])) : new Map();
