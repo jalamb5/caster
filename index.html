@@ -602,6 +602,20 @@ let audiobookPendingResume = null;
 // Retained for backward compat with getHarryPotterBooks
 let audiobookBooks = [];
 let audiobookRootId = null;
+// Quick-resume: last book+chapter played, with breadcrumb path to navigate back to it
+let audiobookResume = null;
+const AUDIOBOOK_RESUME_KEY = 'caster.jellyfin.resume';
+try{
+  const raw = localStorage.getItem(AUDIOBOOK_RESUME_KEY);
+  if(raw) audiobookResume = JSON.parse(raw);
+}catch(e){}
+function saveAudiobookResume(){
+  try{ localStorage.setItem(AUDIOBOOK_RESUME_KEY, JSON.stringify(audiobookResume)); }catch(e){}
+}
+function clearAudiobookResume(){
+  audiobookResume = null;
+  try{ localStorage.removeItem(AUDIOBOOK_RESUME_KEY); }catch(e){}
+}
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 const JELLYFIN_DEFAULT_SERVER = '';
 const JELLYFIN_USER_STORAGE_KEY = 'caster.jellyfin.user';
@@ -736,12 +750,54 @@ async function navigateAudiobookBack(){
       return;
     }
     const items = await audiobookClient.getFolderItems(prev.parentId);
+    // If this parent was a book folder (chapters), restore chapter view
+    if((items.Items || []).some(i => i.Type === 'AudioBook')){
+      const normalized = genericNormalizeChapters(items.Items || []);
+      audiobooksNav = normalized.chapters;
+      audiobookActiveBookId = prev.parentId;
+      audiobooksNavTitle = prev.title;
+      audiobooksNavParentId = prev.parentId;
+      audiobookLibraryState = 'ready';
+      renderAll();
+      return;
+    }
     audiobooksNav = (items.Items || []).map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
     audiobooksNavTitle = prev.title;
     audiobooksNavParentId = prev.parentId;
     audiobookLibraryState = 'ready';
   }catch(e){ audiobookError = e.message; }
   renderAll();
+}
+// Jump straight to the last-played book and resume its chapter
+async function resumeAudiobookQuick(){
+  if(!audiobookClient || !audiobookResume) return;
+  audiobookLibraryState = 'loading'; audiobookError = ''; renderAll();
+  try{
+    // Restore breadcrumb trail
+    audiobooksNavBack = (audiobookResume.navBack || []).map(b => ({ title: b.title, parentId: b.parentId }));
+    audiobooksNavTitle = audiobookResume.navTitle || audiobookResume.bookTitle;
+    audiobooksNavParentId = audiobookResume.navParentId || audiobookResume.bookId;
+    // Load the book's chapters
+    const items = await audiobookClient.getFolderItems(audiobookResume.bookId);
+    const audioItems = (items.Items || []).filter(i => i.Type === 'AudioBook');
+    if(!audioItems.length) throw new Error('That book no longer has playable chapters');
+    const normalized = genericNormalizeChapters(audioItems);
+    audiobooksNav = normalized.chapters;
+    audiobookActiveBookId = audiobookResume.bookId;
+    audiobookLibraryState = 'ready';
+    // Pick the resume chapter or the first one
+    const chapter = audiobooksNav.find(c => c.id === audiobookResume.chapterId) || audiobooksNav[0];
+    if(chapter){
+      audiobookActiveChapterId = chapter.id;
+      playAudiobook(audiobookActiveBookId, chapter.id, { positionTicks: chapter.positionTicks || 0, autoplay: true });
+    } else {
+      renderAll();
+    }
+  }catch(e){
+    audiobookLibraryState = 'error';
+    audiobookError = e.message;
+    renderAll();
+  }
 }
 async function refreshHarryPotterBooks(){
   if(!audiobookClient) return;
@@ -816,7 +872,18 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
   audiobookActiveBookId=book.id; audiobookActiveChapterId=chapter.id;
   audiobookSession=null;
   playerMode='audiobook'; currentShowId=null; currentGuid=null;
-  // If book is just an ID placeholder, keep the generic nav
+  // Remember this as the resume target so the root view can offer quick-start
+  audiobookResume = {
+    bookId: book.id,
+    bookTitle: audiobooksNavTitle || 'Audiobook',
+    chapterId: chapter.id,
+    chapterTitle: String(chapter.title || ''),
+    chapterNumber: chapter.chapterNumber || 0,
+    navTitle: audiobooksNavTitle || 'Audiobook',
+    navParentId: audiobooksNavParentId,
+    navBack: audiobooksNavBack.slice(),
+  };
+  saveAudiobookResume();
   const userTicks=Number.isFinite(Number(chapter.positionTicks))?Number(chapter.positionTicks):0;
   const startTicks=Math.max(0,Number.isFinite(Number(positionTicks))?Number(positionTicks):userTicks);
   audio.src=buildStreamUrl(audiobookServerUrl,chapter.id,chapter.mediaSourceId || chapter.id);
@@ -1087,7 +1154,9 @@ function audiobookFooter(){
   return renderAudiobookFolderList(audiobooksNavTitle, userLine + (audiobooksNavBack.length ? `<button class="chip" id="abBack">‹ Back</button>` : '') + signOut, audiobooksNav);
 }
 function renderAudiobookFolderList(title, headerExtra, items){
-  return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="row" style="justify-content:space-between;margin:0 0 8px"><span class="muted small">${esc(title)}</span>${headerExtra}</div>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}<div class="card" style="padding:4px 12px">${items.map(i => {
+  const isRoot = audiobooksNavBack.length === 0;
+  const resumeCard = (isRoot && audiobookResume) ? `<div class="card shuffle-all" id="abQuickResume" style="margin-top:12px"><div style="display:flex;align-items:center;gap:14px"><div class="sa-icon">▶</div><div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16.5px">Continue listening</div><div class="small muted mono">${esc(audiobookResume.bookTitle)}${audiobookResume.chapterNumber ? ' · Ch ' + audiobookResume.chapterNumber : ''}${audiobookResume.chapterTitle ? ': ' + esc(audiobookResume.chapterTitle) : ''}</div></div></div></div>` : '';
+  return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="row" style="justify-content:space-between;margin:0 0 8px"><span class="muted small">${esc(title)}</span>${headerExtra}</div>${resumeCard}${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}<div class="card" style="padding:4px 12px">${items.map(i => {
     const icon = i.type === 'Folder' ? '📁' : '🎧';
     return `<div class="show" data-nav="${esc(i.id)}" style="border-radius:10px"><div style="flex:1;min-width:0"><div class="t">${icon} ${esc(i.name)}</div><div class="s">${i.type === 'Folder' ? 'Folder' : 'Audiobook'}</div></div><span style="font-size:20px;color:var(--muted)">›</span></div>`;
   }).join('')}</div>`;
@@ -1122,6 +1191,7 @@ function renderAudiobookView(v){
   $('#jellyfinSignOut')?.addEventListener('click',()=>{clearJellyfinLogin();audiobookLibraryState='idle';renderAll()});
   $('#abRetry')?.addEventListener('click',()=>navigateAudiobooksToRoot());
   $('#abBack')?.addEventListener('click',navigateAudiobookBack);
+  $('#abQuickResume')?.addEventListener('click',resumeAudiobookQuick);
   $('#abResume')?.addEventListener('click',()=>{
     const resume = audiobookResumeTarget({ items: audiobooksNav });
     if(resume) playAudiobook(audiobookActiveBookId, resume.chapter.id, {positionTicks: resume.positionTicks});
