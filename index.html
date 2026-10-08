@@ -619,12 +619,40 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 const JELLYFIN_DEFAULT_SERVER = '';
 const JELLYFIN_USER_STORAGE_KEY = 'caster.jellyfin.user';
+const JELLYFIN_TOKEN_KEY = 'caster.jellyfin.token';
 let rememberedJellyfinUser = '';
 let audiobookServerUrl = '';
 try{
   rememberedJellyfinUser = localStorage.getItem(JELLYFIN_USER_STORAGE_KEY) || '';
   audiobookServerUrl = localStorage.getItem('caster.jellyfin.server') || JELLYFIN_DEFAULT_SERVER;
 }catch(e){}
+// Attempt to restore a saved Jellyfin session from localStorage
+async function tryResumeJellyfinSession(){
+  const stored = localStorage.getItem(JELLYFIN_TOKEN_KEY);
+  if(!stored) return false;
+  let tokenData;
+  try{ tokenData = JSON.parse(stored); }catch(e){ return false; }
+  if(!tokenData?.serverUrl || !tokenData?.accessToken || !tokenData?.userId) return false;
+  try{
+    const client = new JellyfinClient({
+      serverUrl: tokenData.serverUrl, userId: tokenData.userId,
+      accessToken: tokenData.accessToken, deviceId: tokenData.deviceId || createDeviceId(),
+    });
+    const profile = await client.request(`/Users/${encodeURIComponent(client.userId)}`);
+    audiobookClient = client; audiobookUser = profile;
+    audiobookServerUrl = tokenData.serverUrl;
+    rememberedJellyfinUser = profile.Name || '';
+    try { const hp = await client.getHarryPotterBooks(); audiobookBooks = hp.books; audiobookRootId = hp.rootId; }catch(e){}
+    audiobooksNavTitle = 'Audiobooks';
+    await navigateAudiobooksToRoot();
+    audiobookLibraryState = 'ready'; audiobookError = '';
+    renderAll();
+    return true;
+  }catch(e){
+    localStorage.removeItem(JELLYFIN_TOKEN_KEY);
+    return false;
+  }
+}
 
 const current = () => {
   if(playerMode === 'audiobook'){
@@ -657,6 +685,7 @@ function applyAudiobookResumePosition(){
 function clearJellyfinLogin(){
   audiobookClient = null; audiobookUser = null; audiobookBooks = []; audiobookRootId = null;
   audiobooksNav = []; audiobooksNavTitle = ''; audiobooksNavBack = []; audiobooksNavParentId = null;
+  try{ localStorage.removeItem(JELLYFIN_TOKEN_KEY); }catch(e){}
 }
 async function connectJellyfin(serverUrl, username, password){
   audiobookLibraryState = 'loading'; audiobookError = ''; renderAll();
@@ -682,6 +711,10 @@ async function connectJellyfin(serverUrl, username, password){
     try{
       localStorage.setItem(JELLYFIN_USER_STORAGE_KEY,rememberedJellyfinUser);
       localStorage.setItem('caster.jellyfin.server',audiobookServerUrl);
+      localStorage.setItem(JELLYFIN_TOKEN_KEY, JSON.stringify({
+        serverUrl: audiobookServerUrl, accessToken: client.accessToken,
+        userId: client.userId, deviceId: client.deviceId,
+      }));
     }catch(e){}
     audiobookLibraryState = 'ready'; audiobookError = '';
     if(playerMode === 'audiobook') currentShowId = null;
@@ -1519,6 +1552,8 @@ window.caster = {
 
 renderAll();
 loadBundledShows().then(renderAll);
+// Try to restore a saved Jellyfin session without requiring a fresh sign-in
+tryResumeJellyfinSession();
 </script>
 </body>
 </html>
