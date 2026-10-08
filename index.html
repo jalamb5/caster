@@ -1108,6 +1108,12 @@ function sleepLabel(){
 }
 
 /* ---------- UI ---------- */
+function audiobookArtUrl(){
+  if(playerMode !== 'audiobook' || !audiobookServerUrl) return '';
+  const id = audiobookActiveBookId;
+  if(!id) return '';
+  return audiobookServerUrl + '/Items/' + encodeURIComponent(id) + '/Images/Primary?width=512';
+}
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let toastTimer;
 function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200); }
@@ -1285,7 +1291,7 @@ function renderPlayerBar(){
   const show = currentShow();
   bar.style.display = 'block';
   const isBook = playerMode === 'audiobook';
-  const art = isBook ? '' : (show?.artwork || '');
+  const art = isBook ? audiobookArtUrl() : (show?.artwork || '');
   $('#pbarArt').style.visibility = art ? 'visible' : 'hidden';
   if(art) $('#pbarArt').src = art;
   $('#pbarTitle').textContent = ep.title || '';
@@ -1303,7 +1309,7 @@ function renderOverlay(){
   if(!ep){ $('#overlay').classList.remove('open'); return; }
   const show = currentShow();
   const isBook = playerMode === 'audiobook';
-  const art = isBook ? '' : (show?.artwork || '');
+  const art = isBook ? audiobookArtUrl() : (show?.artwork || '');
   $('#ovArt').style.visibility = art ? 'visible' : 'hidden';
   if(art) $('#ovArt').src = art;
   $('#ovTitle').textContent = ep.title || '';
