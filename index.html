@@ -235,7 +235,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl } from './jellyfin.mjs';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl } from './jellyfin.mjs?v=1';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -558,6 +558,7 @@ async function connectJellyfin(serverUrl, username, password){
     audiobookLibraryState = 'error';
     audiobookError = error?.message || 'Could not connect to Jellyfin';
     renderAll();
+    throw error;
   }
 }
 async function refreshHarryPotterBooks(){

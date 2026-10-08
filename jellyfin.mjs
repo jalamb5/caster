@@ -1,6 +1,5 @@
 const HARRY_POTTER_BOOK_PATTERN = /^[1-7] HARRY POTTER (?:AND|ANND) .+$/i;
 const TICKS_PER_SECOND = 10_000_000;
-const DEFAULT_SERVER_URL = '';
 
 export function normalizeServerUrl(value) {
   let url;
