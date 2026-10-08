@@ -87,9 +87,12 @@ header{
 .refresh{display:flex;justify-content:flex-end;margin-bottom:10px;}
 .ep{padding:13px 6px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:12px;align-items:center;min-height:52px;}
 .ep:last-child{border-bottom:none;}
-.ep .title{flex:1;font-size:15.5px;}
+.ep .title{flex:1;font-size:15.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ep.heard .title{color:var(--muted);}
 .ep .dur{font-size:13px;color:var(--muted);flex:none;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+.ep .dlbtn{flex:none;background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px;border-radius:6px;line-height:1;}
+.ep .dlbtn:hover,.ep .dlbtn:focus{background:var(--surface2);color:var(--text);}
+.ep .dlbtn.dl-done{color:var(--ok);}
 .ep .dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px rgba(255,160,46,.6);align-self:center;}
 .ep.heard .dot{background:var(--surface2);box-shadow:none;}
 
@@ -186,7 +189,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
     <img id="pbarArt" alt="">
     <div class="meta">
       <div class="t" id="pbarTitle"></div>
-      <div class="s" id="pbarShow"></div>
+      <div class="s" id="pbarShow"><span id="pbarCached" style="display:none;color:var(--ok);font-size:11px;margin-right:4px">✓ cached</span></div>
     </div>
     <div class="ctr">
       <button id="pbarPrev" title="Previous chapter" style="display:none">⏮</button>
@@ -254,6 +257,107 @@ function loadState(){
 }
 function saveState(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ console.warn('save failed', e); } }
 loadState();
+
+/* ---------- offline download cache ---------- */
+const CACHE_NAME = 'caster-audio-v1';
+const DL_KEY = 'caster.downloads.v1';
+let dlState = new Set();  // set of downloaded episode GUIDs
+let dlInProgress = new Set();  // currently downloading
+try{
+  const raw = localStorage.getItem(DL_KEY);
+  if(raw) JSON.parse(raw).forEach(g => dlState.add(g));
+}catch(e){}
+
+function saveDlState(){
+  try{ localStorage.setItem(DL_KEY, JSON.stringify([...dlState])); }catch(e){}
+}
+function isDownloaded(guid){ return dlState.has(guid) && !dlInProgress.has(guid); }
+function dlProgress(guid){ return dlInProgress.has(guid); }
+
+async function startDownload(ep){
+  if(!ep || !ep.url || dlState.has(ep.guid) || dlInProgress.has(ep.guid)) return;
+  dlInProgress.add(ep.guid); renderAll();
+  try{
+    const resp = await fetch(ep.url);
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const cache = await caches.open(CACHE_NAME);
+    // Clone so we can store one copy and use the blob
+    const clone = resp.clone();
+    await cache.put(new Request(ep.url), clone);
+    dlState.add(ep.guid);
+  }catch(e){
+    console.warn('Download failed:', ep.guid, e);
+    toast('Download failed: ' + (ep.title||'').substring(0,30));
+  }
+  dlInProgress.delete(ep.guid);
+  saveDlState();
+  renderAll();
+}
+
+async function removeDownload(ep){
+  if(!ep || !ep.url) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.delete(ep.url);
+  dlState.delete(ep.guid);
+  saveDlState();
+  renderAll();
+}
+
+async function getCachedBlobUrl(ep){
+  if(!ep || !ep.url || !dlState.has(ep.guid)) return null;
+  try{
+    const cache = await caches.open(CACHE_NAME);
+    const resp = await cache.match(ep.url);
+    if(!resp) return null;
+    const blob = await resp.blob();
+    return URL.createObjectURL(blob);
+  }catch(e){ return null; }
+}
+
+async function downloadPendingUrls(){
+  const caches = await caches.open(CACHE_NAME);
+  const keys = await caches.keys();
+  return keys.map(r => r.url);
+}
+
+let cachedBlobUrl = null;
+function revokeCachedBlob(){
+  if(cachedBlobUrl){ URL.revokeObjectURL(cachedBlobUrl); cachedBlobUrl = null; }
+}
+
+async function downloadRandomBatch(count = 5){
+  const candidates = state.shows.flatMap(s => s.episodes)
+    .filter(e => !dlState.has(e.guid) && !dlInProgress.has(e.guid));
+  if(!candidates.length){ toast('All episodes already downloaded'); return; }
+  const batch = [];
+  // Pick random unplayed ones where possible
+  const unplayed = candidates.filter(e => !e.isPlayed && !(e.playCount>0));
+  const pool = unplayed.length >= count ? unplayed : candidates;
+  const shuffled = pool.sort(() => Math.random() - 0.5).slice(0, count);
+  for(const ep of shuffled){
+    dlInProgress.add(ep.guid);
+    batch.push(ep);
+  }
+  renderAll();
+  let ok = 0;
+  for(const ep of batch){
+    try{
+      const resp = await fetch(ep.url);
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      const cache = await caches.open(CACHE_NAME);
+      const clone = resp.clone();
+      await cache.put(new Request(ep.url), clone);
+      dlState.add(ep.guid);
+      ok++;
+    }catch(e){
+      console.warn('Download failed:', ep.guid, e);
+    }
+    dlInProgress.delete(ep.guid);
+    saveDlState();
+    renderAll();
+  }
+  toast(`Downloaded ${ok}/${batch.length} episodes`);
+}
 
 /* ---------- bundled shows (static feeds.json, committed to the repo) ----------
    The hosted app has no proxy, so the favourite shows ship as pre-fetched data.
@@ -464,7 +568,7 @@ async function refreshShow(id){
 /* ---------- player ---------- */
 let currentShowId = null;
 let currentGuid = null;
-let speed = 1;
+let speed = (() => { try { return parseFloat(localStorage.getItem('caster.speed')) || 1; } catch { return 1; } })();
 let sleepTimer = null;   // {mode:'minutes', at, ms} | {mode:'end'} | null
 let posSaveTimer = null;
 let lastProgress = 0;
@@ -711,7 +815,15 @@ async function playEpisode(show, ep, {reset=false}={}){
     audiobookPlaybackGeneration++;
   }
   currentShowId = show.id; currentGuid = ep.guid;
-  audio.src = ep.url;
+  revokeCachedBlob();
+  // Use cached audio if available
+  const cached = await getCachedBlobUrl(ep);
+  if(cached){
+    audio.src = cached;
+    cachedBlobUrl = cached;
+  } else {
+    audio.src = ep.url;
+  }
   audio.playbackRate = speed;
   const pos = (!reset && ep.position && isFinite(ep.position)) ? ep.position : 0;
   audio.currentTime = pos;
@@ -886,8 +998,20 @@ function audiobookFooter(){
   return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="row" style="justify-content:space-between;margin:0 0 8px"><span class="muted small">Harry Potter · ${esc(audiobookUser?.Name||'Jellyfin')}</span><button class="chip" id="jellyfinSignOut">Sign out</button></div>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}${resumeCard}<div class="card" style="padding:4px 12px">${audiobookBooks.map(book=>`<div class="show" data-book="${esc(book.id)}" style="border-radius:10px"><div style="flex:1;min-width:0"><div class="t">${esc(book.title)}</div><div class="s">${book.chapters.length} chapters${book.missingChapterNumbers.length||book.duplicateChapterNumbers.length?' · check chapter numbering':''}</div></div><span style="font-size:20px;color:var(--muted)">›</span></div>`).join('')||'<div class="muted small" style="padding:12px">No Harry Potter books were found.</div>'}</div>`;
 }
 function openAudiobookView(){
-  playerMode='audiobook'; currentShowId=null; currentGuid=null; renderAll(); window.scrollTo(0,0);
-  if(!audiobookClient) openJellyfinSignIn(); else if(audiobookLibraryState!=='ready') refreshHarryPotterBooks();
+  playerMode='audiobook'; currentShowId=null; currentGuid=null;
+  if(!audiobookClient){ renderAll(); openJellyfinSignIn(); return; }
+  if(audiobookLibraryState!=='ready'){ refreshHarryPotterBooks(); renderAll(); window.scrollTo(0,0); return; }
+  // Auto-resume: if a chapter was active, jump into that book
+  if(audiobookActiveBookId && chapterById(audiobookActiveBookId, audiobookActiveChapterId)){
+    renderAll(); window.scrollTo(0,0); return;
+  }
+  // Otherwise jump to the book with an in-progress chapter
+  const target = audiobookResumeForBooks(audiobookBooks);
+  if(target){
+    audiobookActiveBookId = target.book.id;
+    audiobookActiveChapterId = target.chapter.id;
+  }
+  renderAll(); window.scrollTo(0,0);
 }
 function openJellyfinSignIn(){
   openModal('Connect to Jellyfin',`<p class="hint">Use a Jellyfin account with access to Audiobooks. The password is sent to the server for sign-in and is not saved. The server URL is kept locally on this device; its chapters currently stream without authentication.</p><label class="f" for="jfServer">Jellyfin server (HTTPS URL)</label><input type="url" id="jfServer" autocomplete="url" value="${esc(audiobookServerUrl)}" placeholder="https://media.example.org"><label class="f" for="jfUser">Username</label><input type="text" id="jfUser" autocomplete="username" value="${esc(rememberedJellyfinUser)}"><label class="f" for="jfPassword">Password</label><input type="password" id="jfPassword" autocomplete="current-password"><p class="hint" id="jfError" style="color:var(--danger)"></p><button class="chip primary" id="jfSubmit" style="width:100%">Sign in</button>`);
@@ -933,20 +1057,32 @@ function renderShowDetail(){
       </div>
     </div>
     <button class="shuffle-btn" id="shuffleBtn">🎲 &nbsp;Shuffle this show</button>
-    <p class="statline">${un} unplayed · ${pl} heard — ${hint}</p>
-    <div class="refresh"><button class="chip" id="refreshBtn">↻ Refresh feed</button></div>
+    <div class="refresh"><button class="chip" id="refreshBtn">↻ Refresh feed</button><button class="chip" id="dlBatchBtn">⬇ Cache 5 random</button></div>
     <div class="card" style="padding:4px 12px">
       ${eps.map(e => `
         <div class="ep ${e.isPlayed || e.playCount>0 ? 'heard' : ''}" data-guid="${esc(e.guid)}">
           <span class="dot"></span>
           <span class="title">${esc(e.title)}</span>
           <span class="dur">${e.duration ? fmt(e.duration) : ''}</span>
+          <button class="dlbtn ${isDownloaded(e.guid)?'dl-done':''}" data-dl="${esc(e.guid)}" title="${isDownloaded(e.guid)?'Delete download':dlProgress(e.guid)?'Downloading…':'Download offline'}">${dlProgress(e.guid)?'⋯':isDownloaded(e.guid)?'✓':'⬇'}</button>
         </div>`).join('') || '<div class="muted small" style="padding:10px 4px">No episodes found.</div>'}
     </div>`;
   $('#shuffleBtn').addEventListener('click', () => shuffleNow(show.id));
   $('#backBtn').addEventListener('click', () => { currentShowId = null; renderAll(); window.scrollTo(0,0); });
   $('#refreshBtn').addEventListener('click', async e => { e.target.textContent = '↻ Refreshing…'; try{ await refreshShow(show.id); toast('Feed updated'); }catch(err){ toast('Refresh failed'); } renderAll(); });
-  $('#view').querySelectorAll('.ep').forEach(el => el.addEventListener('click', () => playGuid(show.id, el.dataset.guid)));
+  $('#dlBatchBtn').addEventListener('click', () => downloadRandomBatch(5));
+  $('#view').querySelectorAll('.ep').forEach(el => {
+    const guid = el.dataset.guid;
+    const dlBtn = el.querySelector('.dlbtn');
+    if(dlBtn) dlBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const ep = show.episodes.find(e => e.guid === guid);
+      if(!ep) return;
+      if(isDownloaded(guid)) removeDownload(ep);
+      else startDownload(ep);
+    });
+    el.addEventListener('click', () => playGuid(show.id, guid));
+  });
 }
 
 function renderPlayerBar(){
@@ -961,6 +1097,7 @@ function renderPlayerBar(){
   if(art) $('#pbarArt').src = art;
   $('#pbarTitle').textContent = ep.title || '';
   $('#pbarShow').textContent = isBook ? `${show?.title || 'Harry Potter'} · Chapter ${ep.chapterNumber}` : (show?.title || '');
+  $('#pbarCached').style.display = !isBook && isDownloaded(ep.guid) ? '' : 'none';
   $('#pbarPlay').textContent = audio.paused ? '▶' : '❚❚';
   $('#pbarSkip').style.display = isBook ? 'none' : '';
   $('#pbarPrev').style.display = isBook ? '' : 'none';
@@ -1190,6 +1327,7 @@ $('#speedChip').addEventListener('click', () => {
   const speeds = [1, 1.2, 1.5, 2, 0.8];
   speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length];
   audio.playbackRate = speed;
+  try{ localStorage.setItem('caster.speed', speed); }catch(e){}
   try{ navigator.mediaSession && navigator.mediaSession.setPositionState({ duration: audio.duration||0, position: audio.currentTime||0, playbackRate: speed }); }catch(e){}
   renderOverlay();
 });
@@ -1216,6 +1354,7 @@ window.caster = {
   episodeWeight, pickEpisode, pickAcrossShows, markHeard, markPlayedIfDone,
   playEpisode, playGuid, shuffleNow, shuffleAll, next, skipCurrent, togglePlay,
   searchiTunes, current, showById, unplayedCount,
+  startDownload, removeDownload, downloadRandomBatch, isDownloaded, dlState,
 };
 
 renderAll();
