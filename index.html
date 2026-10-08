@@ -1141,6 +1141,26 @@ window.addEventListener('pagehide', () => {
   const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); }
 });
 
+// Resume playback after mobile browser tab suspension (screen lock / backgrounding)
+window.addEventListener('visibilitychange', () => {
+  if(document.visibilityState !== 'visible') return;
+  if(playerMode !== 'audiobook' || !audiobookSession) return;
+  // Audio may have been paused by the browser during background; resume if it was actively playing
+  if(audio.paused && audio.currentTime > 0 && !audio.ended){
+    audio.play().catch(() => {});  // may fail without user gesture on some mobile browsers
+  }
+});
+window.addEventListener('pageshow', (e) => {
+  if(!e.persisted || playerMode !== 'audiobook') return;
+  // Restored from bfcache — audio state is gone, refresh from server position
+  const book = bookById(audiobookActiveBookId);
+  if(!book || !audiobookActiveChapterId) return;
+  const chapter = chapterById(book.id, audiobookActiveChapterId);
+  if(!chapter) return;
+  audiobookSession = null;
+  startAudiobookSession(book, chapter, {positionTicks: chapter.positionTicks, autoplay: false});
+});
+
 
 setInterval(() => { if(sleepTimer) renderSleepChip(); }, 30000);
 
