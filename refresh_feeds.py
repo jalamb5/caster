@@ -31,8 +31,6 @@ FEEDS = [
     "https://feeds.simplecast.com/EOAFriME",
     # "Casefile True Crime"
     "https://feeds.acast.com/public/shows/679acff465f74095106abfaa",
-    # "The Rest Is History"
-    "https://feeds.megaphone.fm/GLT4787413333",
 ]
 # ---------------------------------------------------------------------------
 
