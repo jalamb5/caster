@@ -59,9 +59,29 @@ function chapterNumber(path) {
   return match ? Number(match[1]) : null;
 }
 
+export function genericNormalizeChapters(items) {
+  const chapters = (Array.isArray(items) ? items : [])
+    .filter(item => item?.Type === 'AudioBook' && typeof item.Id === 'string' && item.Id)
+    .map((item, index) => ({
+      id: item.Id,
+      title: String(item.Name ?? ''),
+      path: String(item.Path ?? ''),
+      chapterNumber: item.IndexNumber || chapterNumber(item.Path) || (index + 1),
+      runTimeTicks: Number.isFinite(Number(item.RunTimeTicks)) ? Number(item.RunTimeTicks) : 0,
+      positionTicks: Number.isFinite(Number(item.UserData?.PlaybackPositionTicks))
+        ? Number(item.UserData.PlaybackPositionTicks) : 0,
+      played: item.UserData?.Played === true,
+      lastPlayedDate: typeof item.UserData?.LastPlayedDate === 'string' ? item.UserData.LastPlayedDate : '',
+      mediaSourceId: item.MediaSources?.[0]?.Id ?? item.Id,
+      container: item.MediaSources?.[0]?.Container ?? '',
+    }))
+    .sort((a, b) => a.chapterNumber - b.chapterNumber || a.path.localeCompare(b.path));
+  return { chapters, missingChapterNumbers: [], duplicateChapterNumbers: [] };
+}
+
 export function normalizeChapters(items, bookFolderName) {
   if (!isHarryPotterBookFolder(bookFolderName)) {
-    return { chapters: [], missingChapterNumbers: [], duplicateChapterNumbers: [] };
+    return genericNormalizeChapters(items);
   }
   const chapters = (Array.isArray(items) ? items : [])
     .filter(item => item?.Type === 'AudioBook' && typeof item.Id === 'string' && item.Id)
@@ -242,46 +262,46 @@ export class JellyfinClient {
   }
 
   async getHarryPotterBooks() {
-    const views = await this.request('/UserViews');
-    const library = findAudiobooksLibrary(views.Items);
-    if (!library?.Id) throw new Error('Audiobooks library was not found for this account');
-    const roots = await this.request('/Items', {
-      params: { ParentId: library.Id, Recursive: false, Fields: 'Path', Limit: 1000 },
-    });
-    let root = null;
-    let bookFolders = [];
+    // Retained for backward compatibility — uses generic browsing underneath
+    const { libraryId } = await this.getAudiobooksCatalogue();
+    const roots = await this.getFolderItems(libraryId);
     for (const candidate of roots.Items ?? []) {
       if(candidate?.Type !== 'Folder' || !candidate.Id) continue;
-      const children = await this.request('/Items', {
-        params: { ParentId: candidate.Id, Recursive: false, Fields: 'Path', Limit: 1000 },
-      });
+      const children = await this.getFolderItems(candidate.Id);
       const numbered = (children.Items ?? [])
         .filter(item => item.Type === 'Folder' && isHarryPotterBookFolder(item.Name))
         .sort((a, b) => Number(a.Name[0]) - Number(b.Name[0]));
       if (numbered.length === 7 && numbered.every((folder,index) => Number(folder.Name[0]) === index+1)) {
-        root = candidate;
-        bookFolders = numbered;
-        break;
+        const books = [];
+        for (const folder of numbered) {
+          const chResult = await this.getFolderItems(folder.Id);
+          const normalized = normalizeChapters(chResult.Items, folder.Name);
+          if (!normalized.chapters.length) throw new Error(`No playable chapters found for ${folder.Name}`);
+          books.push({
+            id: folder.Id,
+            title: folder.Name.replace(/^\d\s+/, '').replace(/\bANND\b/i, 'AND'),
+            chapters: normalized.chapters,
+            missingChapterNumbers: normalized.missingChapterNumbers,
+            duplicateChapterNumbers: normalized.duplicateChapterNumbers,
+          });
+        }
+        return { rootId: candidate.Id, books };
       }
     }
-    if (!root?.Id) throw new Error('Could not identify a Harry Potter series folder in the Audiobooks library');
+    throw new Error('Could not identify a Harry Potter series folder in the Audiobooks library');
+  }
 
-    const books = [];
-    for (const folder of bookFolders) {
-      const chaptersResult = await this.request('/Items', {
-        params: { ParentId: folder.Id, Recursive: false, Fields: 'Path,MediaSources,RunTimeTicks,UserData', Limit: 1000 },
-      });
-      const normalized = normalizeChapters(chaptersResult.Items, folder.Name);
-      if (!normalized.chapters.length) throw new Error(`No playable Harry Potter chapters found for ${folder.Name}`);
-      books.push({
-        id: folder.Id,
-        title: folder.Name.replace(/^\d\s+/, '').replace(/\bANND\b/i, 'AND'),
-        chapters: normalized.chapters,
-        missingChapterNumbers: normalized.missingChapterNumbers,
-        duplicateChapterNumbers: normalized.duplicateChapterNumbers,
-      });
-    }
-    return { rootId: root.Id, books };
+  async getAudiobooksCatalogue() {
+    const views = await this.request('/UserViews');
+    const library = findAudiobooksLibrary(views.Items);
+    if (!library?.Id) throw new Error('Audiobooks library was not found');
+    return { libraryId: library.Id, libraryName: library.Name };
+  }
+
+  async getFolderItems(folderId) {
+    return this.request('/Items', {
+      params: { ParentId: folderId, Recursive: false, Fields: 'Path,MediaSources,RunTimeTicks,UserData', Limit: 1000 },
+    });
   }
 
   getPlaybackInfo(chapter) {

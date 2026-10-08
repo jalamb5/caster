@@ -238,7 +238,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl } from './jellyfin.mjs?v=2';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=2';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -585,10 +585,13 @@ let lastPosSave = 0;
 let playerMode = 'podcast';
 let audiobookClient = null;
 let audiobookUser = null;
-let audiobookBooks = [];
+// Generic audiobook navigation: items at the current level
+let audiobooksNav = [];        // [{ id, name, type, ... }] — current folder's children
+let audiobooksNavTitle = '';   // "Audiobooks", "Terry Pratchett", etc.
+let audiobooksNavBack = [];    // Stack of { title, parentId } for back navigation
+let audiobooksNavParentId = null; // folder ID whose children we're showing (null = library root)
 let audiobookLibraryState = 'idle';
 let audiobookError = '';
-let audiobookRootId = null;
 let audiobookActiveBookId = null;
 let audiobookActiveChapterId = null;
 let audiobookSession = null;
@@ -596,6 +599,9 @@ let audiobookReportTimer = null;
 let audiobookReportChain = Promise.resolve();
 let audiobookPlaybackGeneration = 0;
 let audiobookPendingResume = null;
+// Retained for backward compat with getHarryPotterBooks
+let audiobookBooks = [];
+let audiobookRootId = null;
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 const JELLYFIN_DEFAULT_SERVER = '';
 const JELLYFIN_USER_STORAGE_KEY = 'caster.jellyfin.user';
@@ -608,13 +614,12 @@ try{
 
 const current = () => {
   if(playerMode === 'audiobook'){
-    const book = audiobookBooks.find(b => b.id === audiobookActiveBookId);
-    return book?.chapters.find(ch => ch.id === audiobookActiveChapterId) || null;
+    return audiobooksNav.find(i => i.id === audiobookActiveChapterId) || null;
   }
   return currentShowId ? showById(currentShowId)?.episodes.find(e => e.guid === currentGuid) : null;
 };
 const currentShow = () => playerMode === 'audiobook'
-  ? audiobookBooks.find(b => b.id === audiobookActiveBookId) || null
+  ? audiobooksNav.find(i => i.id === audiobookActiveBookId) || null
   : showById(currentShowId) || null;
 function audiobookResumeTarget(book){
   if(!book || !Array.isArray(book.chapters)) return null;
@@ -637,6 +642,7 @@ function applyAudiobookResumePosition(){
 }
 function clearJellyfinLogin(){
   audiobookClient = null; audiobookUser = null; audiobookBooks = []; audiobookRootId = null;
+  audiobooksNav = []; audiobooksNavTitle = ''; audiobooksNavBack = []; audiobooksNavParentId = null;
 }
 async function connectJellyfin(serverUrl, username, password){
   audiobookLibraryState = 'loading'; audiobookError = ''; renderAll();
@@ -653,9 +659,11 @@ async function connectJellyfin(serverUrl, username, password){
   try{
     const client = await JellyfinClient.authenticate({serverUrl:audiobookServerUrl,username,password,deviceId:createDeviceId()});
     const profile = await client.request(`/Users/${encodeURIComponent(client.userId)}`);
-    const catalogue = await client.getHarryPotterBooks();
-    audiobookClient = client; audiobookUser = profile; audiobookBooks = catalogue.books; audiobookRootId = catalogue.rootId;
-    for(const book of audiobookBooks){for(const chapter of book.chapters){chapter.lastPlayedDate = chapter.lastPlayedDate || '';}}
+    audiobookClient = client; audiobookUser = profile;
+    // Also fetch HP catalogue for backward compat
+    try { const hp = await client.getHarryPotterBooks(); audiobookBooks = hp.books; audiobookRootId = hp.rootId; }catch(e){}
+    audiobooksNavTitle = 'Audiobooks';
+    await navigateAudiobooksToRoot();
     rememberedJellyfinUser = profile.Name || username;
     try{
       localStorage.setItem(JELLYFIN_USER_STORAGE_KEY,rememberedJellyfinUser);
@@ -663,7 +671,7 @@ async function connectJellyfin(serverUrl, username, password){
     }catch(e){}
     audiobookLibraryState = 'ready'; audiobookError = '';
     if(playerMode === 'audiobook') currentShowId = null;
-    closeModal(); renderAll(); toast('Harry Potter books ready');
+    closeModal(); renderAll(); toast('Audiobooks ready');
   }catch(error){
     clearJellyfinLogin();
     audiobookLibraryState = 'error';
@@ -672,24 +680,82 @@ async function connectJellyfin(serverUrl, username, password){
     throw error;
   }
 }
+async function navigateAudiobooksToRoot(){
+  if(!audiobookClient) return;
+  try{
+    const cat = await audiobookClient.getAudiobooksCatalogue();
+    const items = await audiobookClient.getFolderItems(cat.libraryId);
+    audiobooksNav = (items.Items || []).map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
+    audiobooksNavParentId = null;
+    audiobooksNavBack = [];
+    audiobooksNavTitle = 'Audiobooks';
+  }catch(e){ audiobookError = e.message; }
+}
+async function navigateAudiobooksToFolder(folderId, folderName){
+  if(!audiobookClient) return;
+  audiobookLibraryState = 'loading'; audiobookError = ''; renderAll();
+  try{
+    const items = await audiobookClient.getFolderItems(folderId);
+    const audioItems = (items.Items || []);
+    // If folder contains AudioBook items, load them as chapters
+    if(audioItems.some(i => i.Type === 'AudioBook')){
+      const normalized = genericNormalizeChapters(audioItems);
+      audiobooksNav = normalized.chapters;
+      audiobookActiveBookId = folderId;
+      // Try auto-resume
+      const resume = audiobookResumeTarget({ items: audiobooksNav });
+      if(resume) audiobookActiveChapterId = resume.chapter.id;
+      // Push back nav
+      audiobooksNavBack.push({ title: audiobooksNavTitle, parentId: audiobooksNavParentId });
+      audiobooksNavTitle = folderName;
+      audiobooksNavParentId = folderId;
+      audiobookLibraryState = 'ready';
+      renderAll();
+      return;
+    }
+    // Otherwise show sub-folders
+    audiobooksNav = audioItems.map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
+    audiobooksNavBack.push({ title: audiobooksNavTitle, parentId: audiobooksNavParentId });
+    audiobooksNavTitle = folderName;
+    audiobooksNavParentId = folderId;
+    audiobookLibraryState = 'ready';
+  }catch(e){ audiobookError = e.message; }
+  renderAll();
+}
+async function navigateAudiobookBack(){
+  const prev = audiobooksNavBack.pop();
+  if(!prev){ await navigateAudiobooksToRoot(); return; }
+  audiobookLibraryState = 'loading'; renderAll();
+  try{
+    if(prev.parentId === null){
+      await navigateAudiobooksToRoot();
+      return;
+    }
+    const items = await audiobookClient.getFolderItems(prev.parentId);
+    audiobooksNav = (items.Items || []).map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
+    audiobooksNavTitle = prev.title;
+    audiobooksNavParentId = prev.parentId;
+    audiobookLibraryState = 'ready';
+  }catch(e){ audiobookError = e.message; }
+  renderAll();
+}
 async function refreshHarryPotterBooks(){
   if(!audiobookClient) return;
-  audiobookLibraryState='loading'; audiobookError=''; renderAll();
-  try{
-    const catalogue=await audiobookClient.getHarryPotterBooks();
-    const previous=new Map(audiobookBooks.map(book=>[book.id,book]));
-    audiobookBooks=catalogue.books.map(book=>{
-      const old=previous.get(book.id);
-      if(!old) return book;
-      const oldById=new Map(old.chapters.map(ch=>[ch.id,ch]));
-      return {...book,chapters:book.chapters.map(ch=>({...ch,lastPlayedDate:ch.lastPlayedDate || oldById.get(ch.id)?.lastPlayedDate || ''}))};
-    });
-    audiobookRootId=catalogue.rootId; audiobookLibraryState='ready'; renderAll();
-  }catch(error){audiobookLibraryState='error';audiobookError=error?.message || 'Could not load Harry Potter audiobooks';renderAll();}
+  await navigateAudiobooksToRoot();
 }
+// Retained for compat
 function bookById(id){ return audiobookBooks.find(book=>book.id===id) || null; }
-function chapterById(bookId, chapterId){ return bookById(bookId)?.chapters.find(ch=>ch.id===chapterId) || null; }
+function chapterById(bookId, chapterId){
+  const c = audiobooksNav.find(i => i.id === chapterId);
+  if(c) return c;
+  return bookById(bookId)?.chapters.find(ch=>ch.id===chapterId) || null;
+}
 function currentAudiobookChapter(){ return chapterById(audiobookActiveBookId,audiobookActiveChapterId); }
+function getCurrentChapters(){
+  const hpBook = bookById(audiobookActiveBookId);
+  if(hpBook) return hpBook.chapters;
+  return audiobooksNav;
+}
 function cancelAudiobookReportTimer(){ if(audiobookReportTimer){clearTimeout(audiobookReportTimer);audiobookReportTimer=null;} }
 function queueAudiobookReport(kind, positionSeconds=audio.currentTime, isPaused=audio.paused){
   const client=audiobookClient, chapter=currentAudiobookChapter(), session=audiobookSession;
@@ -746,6 +812,7 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
   audiobookActiveBookId=book.id; audiobookActiveChapterId=chapter.id;
   audiobookSession=null;
   playerMode='audiobook'; currentShowId=null; currentGuid=null;
+  // If book is just an ID placeholder, keep the generic nav
   const userTicks=Number.isFinite(Number(chapter.positionTicks))?Number(chapter.positionTicks):0;
   const startTicks=Math.max(0,Number.isFinite(Number(positionTicks))?Number(positionTicks):userTicks);
   audio.src=buildStreamUrl(audiobookServerUrl,chapter.id,chapter.mediaSourceId || chapter.id);
@@ -770,21 +837,24 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
   updateMediaSession();renderAll();
 }
 function playAudiobook(bookId,chapterId,{positionTicks,autoplay=true}={}){
-  const book=bookById(bookId);const chapter=chapterById(bookId,chapterId);
-  if(!book || !chapter) return;
-  startAudiobookSession(book,chapter,{positionTicks,autoplay});
+  const chapter = chapterById(bookId, chapterId);
+  if(!chapter) return;
+  startAudiobookSession({ id: bookId }, chapter, {positionTicks,autoplay});
 }
 function resumeAudiobook(bookId){
-  const book=bookById(bookId);const target=audiobookResumeTarget(book);
-  if(!target) return;
-  playAudiobook(book.id,target.chapter.id,{positionTicks:target.positionTicks,autoplay:true});
+  const chapters = getCurrentChapters();
+  if(!chapters.length) return;
+  const resume = audiobookResumeTarget({ items: chapters });
+  if(!resume) return;
+  playAudiobook(bookId, resume.chapter.id, {positionTicks: resume.positionTicks, autoplay: true});
 }
 function nextAudiobookChapter(){
   if(sleepTimer && sleepTimer.mode==='end'){pause('sleep');clearSleepTimer();return;}
-  const book=bookById(audiobookActiveBookId);const chapter=currentAudiobookChapter();
-  if(!book || !chapter) return;
-  if(book.missingChapterNumbers.length || book.duplicateChapterNumbers.length){pause();toast('Chapter numbering needs fixing before automatic continuation');return;}
-  const next=nextChapter(book.chapters,chapter.id);
+  const chapter = currentAudiobookChapter();
+  if(!chapter) return;
+  const chapters = getCurrentChapters();
+  if(!chapters.length) return;
+  const next = nextChapter(chapters, chapter.id);
   if(!next){
     cancelAudiobookReportTimer();
     const position=audio.currentTime;
@@ -793,14 +863,15 @@ function nextAudiobookChapter(){
     toast('End of this book');
     return;
   }
-  playAudiobook(book.id,next.id,{positionTicks:next.positionTicks||0,autoplay:true});
+  playAudiobook(audiobookActiveBookId, next.id, {positionTicks:next.positionTicks||0,autoplay:true});
 }
 function previousAudiobookChapter(){
-  const book=bookById(audiobookActiveBookId);const chapter=currentAudiobookChapter();
-  if(!book || !chapter) return;
+  const chapter = currentAudiobookChapter();
+  if(!chapter) return;
   if(audio.currentTime>5){audio.currentTime=0;return;}
-  const index=book.chapters.findIndex(ch=>ch.id===chapter.id);
-  if(index>0) playAudiobook(book.id,book.chapters[index-1].id,{positionTicks:0,autoplay:true});
+  const chapters = getCurrentChapters();
+  const index = chapters.findIndex(ch=>ch.id===chapter.id);
+  if(index>0) playAudiobook(audiobookActiveBookId,chapters[index-1].id,{positionTicks:0,autoplay:true});
 }
 function skipAudiobookChapter(){
   if(audio.currentTime>5){nextAudiobookChapter();return;}
@@ -993,31 +1064,46 @@ function renderHome(){
 }
 
 function audiobookFooter(){
-  const resume=audiobookResumeForBooks(audiobookBooks);
-  const resumeCard=resume ? `<div class="card shuffle-all" id="resumeBookCard"><div style="display:flex;align-items:center;gap:14px"><div class="sa-icon">▶</div><div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16.5px">Continue listening</div><div class="small muted mono">${esc(resume.book.title)} · Ch ${resume.chapter.chapterNumber}: ${esc(resume.chapter.title)}</div></div></div></div>` : '';
-  if(audiobookLibraryState==='loading') return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="empty"><div class="big">📚</div><div class="muted">Loading Harry Potter books…</div></div>`;
+  const modeRow = '<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div>';
+  const signOut = `<button class="chip" id="jellyfinSignOut">Sign out</button>`;
+  const userLine = audiobookUser ? `<span class="muted small">${esc(audiobookUser.Name||'')}</span>` : '';
+  if(audiobookLibraryState==='loading') return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">Loading audiobooks…</div></div>`;
   if(!audiobookClient){
-    return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="empty"><div class="big">📚</div><div class="muted">Sign in to Jellyfin to see your Harry Potter audiobooks.</div><button class="chip primary" id="jellyfinSignIn">Sign in to Jellyfin</button>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}</div>`;
+    return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">Sign in to Jellyfin to see your audiobooks.</div><button class="chip primary" id="jellyfinSignIn">Sign in to Jellyfin</button>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}</div>`;
   }
   if(audiobookLibraryState==='error'){
-    return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="empty"><div class="big">⚠️</div><div class="muted">${esc(audiobookError||'Could not load the Harry Potter library.')}</div><button class="chip" id="hpRetry">Try again</button><button class="chip" id="jellyfinSignOut">Sign out</button></div>`;
+    return `${modeRow}<div class="empty"><div class="big">⚠️</div><div class="muted">${esc(audiobookError||'Could not load audiobooks.')}</div><button class="chip" id="abRetry">Try again</button>${signOut}</div>`;
   }
-  return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="row" style="justify-content:space-between;margin:0 0 8px"><span class="muted small">Harry Potter · ${esc(audiobookUser?.Name||'Jellyfin')}</span><button class="chip" id="jellyfinSignOut">Sign out</button></div>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}${resumeCard}<div class="card" style="padding:4px 12px">${audiobookBooks.map(book=>`<div class="show" data-book="${esc(book.id)}" style="border-radius:10px"><div style="flex:1;min-width:0"><div class="t">${esc(book.title)}</div><div class="s">${book.chapters.length} chapters${book.missingChapterNumbers.length||book.duplicateChapterNumbers.length?' · check chapter numbering':''}</div></div><span style="font-size:20px;color:var(--muted)">›</span></div>`).join('')||'<div class="muted small" style="padding:12px">No Harry Potter books were found.</div>'}</div>`;
+  // Show navigation items or chapter list
+  if(!audiobooksNav.length) return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">No items found in this library.</div>${signOut}</div>`;
+  // If nav items have chapterNumber, render as chapters
+  if(audiobooksNav[0]?.chapterNumber){
+    return renderAudiobookChapterList(audiobooksNavTitle, audiobooksNavBack.length ? '‹ Audiobooks' : '', audiobooksNav);
+  }
+  return renderAudiobookFolderList(audiobooksNavTitle, userLine + (audiobooksNavBack.length ? `<button class="chip" id="abBack">‹ Back</button>` : '') + signOut, audiobooksNav);
+}
+function renderAudiobookFolderList(title, headerExtra, items){
+  return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="row" style="justify-content:space-between;margin:0 0 8px"><span class="muted small">${esc(title)}</span>${headerExtra}</div>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}<div class="card" style="padding:4px 12px">${items.map(i => {
+    const icon = i.type === 'Folder' ? '📁' : '🎧';
+    return `<div class="show" data-nav="${esc(i.id)}" style="border-radius:10px"><div style="flex:1;min-width:0"><div class="t">${icon} ${esc(i.name)}</div><div class="s">${i.type === 'Folder' ? 'Folder' : 'Audiobook'}</div></div><span style="font-size:20px;color:var(--muted)">›</span></div>`;
+  }).join('')}</div>`;
+}
+function renderAudiobookChapterList(title, backLabel, chapters){
+  const warning = '';
+  const currentChapter = chapters.find(c => c.id === audiobookActiveChapterId);
+  const resume = audiobookResumeTarget({ items: chapters });
+  const resumeBtn = resume ? `<button class="shuffle-btn" id="abResume">${resume.chapter.id === currentChapter?.id ? '▶ Resume this chapter' : '▶ Continue listening'}</button>` : '';
+  return `<div class="row" style="margin:6px 0 12px">${backLabel ? `<button class="chip" id="abBack">${esc(backLabel)}</button>` : ''}<span style="flex:1"></span><button class="chip" id="modePodcasts">🎙 Podcasts</button></div><div class="detail-head"><div class="sa-icon">📚</div><div><div class="t">${esc(title)}</div><div class="muted small">Audiobook</div></div></div>${warning}${resumeBtn}${currentChapter ? `<p class="statline">Now: ${esc(currentChapter.title)}</p>` : `<p class="statline">${chapters.length} parts</p>`}<div class="card" style="padding:4px 12px">${chapters.map(ch => `<div class="ep ${ch.played?'heard':''}" data-chapter="${esc(ch.id)}"><span class="dot"></span><span class="title">${ch.chapterNumber ? String(ch.chapterNumber).padStart(2,'0')+' · ' : ''}${esc(ch.title)}${ch.positionTicks>0&&!ch.played?' · '+fmt(ticksToSeconds(ch.positionTicks)):''}</span><span class="dur">${ch.runTimeTicks?fmt(ticksToSeconds(ch.runTimeTicks)):''}</span></div>`).join('')}</div>`;
 }
 function openAudiobookView(){
   playerMode='audiobook'; currentShowId=null; currentGuid=null;
   if(!audiobookClient){ renderAll(); openJellyfinSignIn(); return; }
-  if(audiobookLibraryState!=='ready'){ refreshHarryPotterBooks(); renderAll(); window.scrollTo(0,0); return; }
-  // Auto-resume: if a chapter was active, jump into that book
-  if(audiobookActiveBookId && chapterById(audiobookActiveBookId, audiobookActiveChapterId)){
+  if(audiobookLibraryState!=='ready' || !audiobooksNav.length){ navigateAudiobooksToRoot(); renderAll(); window.scrollTo(0,0); return; }
+  // Auto-resume: if a chapter was active, show its chapter list
+  if(audiobookActiveBookId && audiobooksNav[0]?.chapterNumber){
     renderAll(); window.scrollTo(0,0); return;
   }
-  // Otherwise jump to the book with an in-progress chapter
-  const target = audiobookResumeForBooks(audiobookBooks);
-  if(target){
-    audiobookActiveBookId = target.book.id;
-    audiobookActiveChapterId = target.chapter.id;
-  }
+  // Otherwise show the current navigation level
   renderAll(); window.scrollTo(0,0);
 }
 function openJellyfinSignIn(){
@@ -1025,26 +1111,19 @@ function openJellyfinSignIn(){
   $('#jfSubmit').addEventListener('click',async()=>{const button=$('#jfSubmit'),server=$('#jfServer').value.trim(),user=$('#jfUser').value.trim(),password=$('#jfPassword').value;button.disabled=true;button.textContent='Signing in…';$('#jfError').textContent='';try{await connectJellyfin(server,user,password)}catch(error){$('#jfError').textContent=error?.message||'Could not sign in'}finally{const field=$('#jfPassword');if(field)field.value='';if(button.isConnected){button.disabled=false;button.textContent='Sign in';}}});
 }
 function renderAudiobookView(v){
-  const book=bookById(audiobookActiveBookId);
-  if(!book){
-    v.innerHTML=audiobookFooter();
-    $('#modePodcasts')?.addEventListener('click',()=>{playerMode='podcast';renderAll()});
-    $('#modeBooks')?.addEventListener('click',openAudiobookView);
-    $('#jellyfinSignIn')?.addEventListener('click',openJellyfinSignIn);
-    $('#jellyfinSignOut')?.addEventListener('click',()=>{clearJellyfinLogin();audiobookLibraryState='idle';renderAll()});
-    $('#hpRetry')?.addEventListener('click',refreshHarryPotterBooks);
-    $('#resumeBookCard')?.addEventListener('click',()=>{const target=audiobookResumeForBooks(audiobookBooks);if(target)playAudiobook(target.book.id,target.chapter.id,{positionTicks:target.positionTicks})});
-    v.querySelectorAll('[data-book]').forEach(el=>el.addEventListener('click',()=>{audiobookActiveBookId=el.dataset.book;renderAll()}));
-    return;
-  }
-  const currentChapter=chapterById(book.id,audiobookActiveChapterId);
-  const resume=audiobookResumeTarget(book);
-  const warning=book.missingChapterNumbers.length||book.duplicateChapterNumbers.length?`<p class="small" style="color:var(--danger)">Chapter numbering has gaps or duplicates; automatic continuation is disabled until resolved.</p>`:'';
-  v.innerHTML=`<div class="row" style="margin:6px 0 12px"><button class="chip" id="hpBack">‹ Harry Potter</button><span style="flex:1"></span><button class="chip" id="modePodcasts">🎙 Podcasts</button></div><div class="detail-head"><div class="sa-icon">📚</div><div><div class="t">${esc(book.title)}</div><div class="muted small">Harry Potter audiobook</div></div></div>${warning}<button class="shuffle-btn" id="hpResume">${resume?.chapter.id===currentChapter?.id?'▶ Resume this chapter':'▶ Continue listening'}</button><p class="statline">${currentChapter?`Now: Ch ${currentChapter.chapterNumber} · ${esc(currentChapter.title)}`:`${book.chapters.length} chapters`}</p><div class="card" style="padding:4px 12px">${book.chapters.map(ch=>`<div class="ep ${ch.played?'heard':''}" data-chapter="${esc(ch.id)}"><span class="dot"></span><span class="title">${String(ch.chapterNumber).padStart(2,'0')} · ${esc(ch.title)}${ch.positionTicks>0&&!ch.played?' · '+fmt(ticksToSeconds(ch.positionTicks)):''}</span><span class="dur">${ch.runTimeTicks?fmt(ticksToSeconds(ch.runTimeTicks)):''}</span></div>`).join('')}</div>`;
-  $('#hpBack').addEventListener('click',()=>{audiobookActiveBookId=null;audiobookActiveChapterId=null;renderAll()});
-  $('#modePodcasts').addEventListener('click',()=>{playerMode='podcast';audiobookActiveBookId=null;audiobookActiveChapterId=null;renderAll()});
-  $('#hpResume').addEventListener('click',()=>resumeAudiobook(book.id));
-  v.querySelectorAll('[data-chapter]').forEach(el=>el.addEventListener('click',()=>playAudiobook(book.id,el.dataset.chapter,{positionTicks:chapterById(book.id,el.dataset.chapter)?.positionTicks||0})));
+  v.innerHTML=audiobookFooter();
+  $('#modePodcasts')?.addEventListener('click',()=>{playerMode='podcast';audiobookActiveBookId=null;audiobookActiveChapterId=null;renderAll()});
+  $('#modeBooks')?.addEventListener('click',openAudiobookView);
+  $('#jellyfinSignIn')?.addEventListener('click',openJellyfinSignIn);
+  $('#jellyfinSignOut')?.addEventListener('click',()=>{clearJellyfinLogin();audiobookLibraryState='idle';renderAll()});
+  $('#abRetry')?.addEventListener('click',()=>navigateAudiobooksToRoot());
+  $('#abBack')?.addEventListener('click',navigateAudiobookBack);
+  $('#abResume')?.addEventListener('click',()=>{
+    const resume = audiobookResumeTarget({ items: audiobooksNav });
+    if(resume) playAudiobook(audiobookActiveBookId, resume.chapter.id, {positionTicks: resume.positionTicks});
+  });
+  v.querySelectorAll('[data-nav]').forEach(el => el.addEventListener('click',()=>navigateAudiobooksToFolder(el.dataset.nav, el.querySelector('.t')?.textContent?.replace(/^[^\s]+\s/,'') || '')));
+  v.querySelectorAll('[data-chapter]').forEach(el => el.addEventListener('click',()=>playAudiobook(audiobookActiveBookId, el.dataset.chapter, {positionTicks: audiobooksNav.find(c => c.id === el.dataset.chapter)?.positionTicks||0})));
 }
 
 function renderShowDetail(){
