@@ -976,7 +976,7 @@ function previousAudiobookChapter(){
   if(!chapter) return;
   if(audio.currentTime>5){audio.currentTime=0;return;}
   const chapters = getCurrentChapters();
-  const index = chapters.findIndex(ch=>ch.id===chapter.id);
+  const index = chapters.map(c => c.id).indexOf(chapter.id);
   if(index>0) playAudiobook(audiobookActiveBookId,chapters[index-1].id,{positionTicks:0,autoplay:true});
 }
 function skipAudiobookChapter(){

@@ -217,10 +217,10 @@ test('chapter normalization flags missing and duplicate chapter numbers', () => 
   assert.deepEqual(result.missingChapterNumbers, [2]);
 });
 
-test('next chapter stays sequential and refuses to jump a gap', () => {
+test('next chapter advances to the next item even when the chapter-number sequence has a gap', () => {
   const chapters = [{ id:'c1', chapterNumber:1 }, { id:'c2', chapterNumber:2 }, { id:'c5', chapterNumber:5 }];
   assert.equal(nextChapter(chapters, 'c1').id, 'c2');
-  assert.equal(nextChapter(chapters, 'c2'), null);
+  assert.equal(nextChapter(chapters, 'c2').id, 'c5');
   assert.equal(nextChapter(chapters, 'c5'), null);
   assert.equal(nextChapter(chapters, 'other'), null);
 });

@@ -129,10 +129,9 @@ export function secondsToTicks(seconds) {
 
 export function nextChapter(chapters, currentId) {
   if (!Array.isArray(chapters)) return null;
-  const index = chapters.findIndex(chapter => chapter.id === currentId);
+  const index = chapters.map(c => c.id).indexOf(currentId);
   if(index < 0 || index + 1 >= chapters.length) return null;
-  const current = chapters[index], next = chapters[index + 1];
-  return next.chapterNumber === current.chapterNumber + 1 ? next : null;
+  return chapters[index + 1];
 }
 
 export function buildStreamUrl(serverUrl, itemId, mediaSourceId = itemId) {
