@@ -148,7 +148,8 @@ def main():
             print(f"OK — {show['title']} ({len(show['episodes'])} eps)")
         except Exception as e:
             print(f"FAILED: {e}")
-            sys.exit(1)
+            if len(FEEDS) == 1:
+                sys.exit(1)
 
     import datetime
     data = {'updated': datetime.datetime.now(datetime.timezone.utc)
