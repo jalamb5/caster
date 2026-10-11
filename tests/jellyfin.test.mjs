@@ -7,6 +7,7 @@ import {
   findAudiobooksLibrary,
   isHarryPotterBookFolder,
   normalizeChapters,
+  genericNormalizeChapters,
   ticksToSeconds,
   secondsToTicks,
   buildStreamUrl,
@@ -203,6 +204,105 @@ test('chapter normalization sorts by filename chapter number, not unreliable ind
   const result = normalizeChapters(rows, book);
   assert.deepEqual(result.chapters.map(c => c.id), ['c1', 'c2']);
   assert.deepEqual(result.missingChapterNumbers, []);
+});
+
+test('generic chapter normalization handles empty input', () => {
+  assert.equal(genericNormalizeChapters([]).chapters.length, 0);
+  assert.equal(genericNormalizeChapters(null).chapters.length, 0);
+  assert.equal(genericNormalizeChapters(undefined).chapters.length, 0);
+});
+
+test('generic chapter normalization filters out non-AudioBook items', () => {
+  const items = [
+    { Id: 'c1', Type: 'AudioBook', Name: 'Chapter 1', Path: '/book/CH01.mp3', RunTimeTicks: 10000000 },
+    { Id: 'c2', Type: 'Folder', Name: 'Metadata', Path: '/book/metadata' },
+    { Id: 'c3', Type: 'AudioBook', Name: 'Chapter 2', Path: '/book/CH02.mp3', RunTimeTicks: 20000000 },
+  ];
+  const result = genericNormalizeChapters(items);
+  assert.equal(result.chapters.length, 2);
+  assert.equal(result.chapters[0].id, 'c1');
+  assert.equal(result.chapters[1].id, 'c3');
+});
+
+test('generic chapter normalization extracts CH-number from filename', () => {
+  const items = [
+    { Id: 'a', Type: 'AudioBook', Name: 'First', Path: '/book/CH01 FIRST.mp3' },
+    { Id: 'b', Type: 'AudioBook', Name: 'Second', Path: '/book/CH02 SECOND.mp3' },
+  ];
+  const result = genericNormalizeChapters(items);
+  assert.equal(result.chapters[0].chapterNumber, 1);
+  assert.equal(result.chapters[1].chapterNumber, 2);
+});
+
+test('generic chapter normalization falls back to IndexNumber when no CH-prefix in filename', () => {
+  const items = [
+    { Id: 'a', Type: 'AudioBook', Name: 'Part 1', Path: '/book/01-part1.mp3', IndexNumber: 3 },
+    { Id: 'b', Type: 'AudioBook', Name: 'Part 2', Path: '/book/02-part2.mp3', IndexNumber: 7 },
+  ];
+  const result = genericNormalizeChapters(items);
+  assert.equal(result.chapters[0].chapterNumber, 3);
+  assert.equal(result.chapters[1].chapterNumber, 7);
+});
+
+test('generic chapter normalization uses sequential index as final fallback', () => {
+  const items = [
+    { Id: 'a', Type: 'AudioBook', Name: 'Disc 1', Path: '/book/disc1.mp3' },
+    { Id: 'b', Type: 'AudioBook', Name: 'Disc 2', Path: '/book/disc2.mp3' },
+  ];
+  const result = genericNormalizeChapters(items);
+  assert.equal(result.chapters[0].chapterNumber, 1);  // index 0 + 1
+  assert.equal(result.chapters[1].chapterNumber, 2);  // index 1 + 1
+});
+
+test('generic chapter normalization sorts by chapter number', () => {
+  const items = [
+    { Id: 'c', Type: 'AudioBook', Name: 'Third', Path: '/book/CH03 THIRD.mp3' },
+    { Id: 'a', Type: 'AudioBook', Name: 'First', Path: '/book/CH01 FIRST.mp3' },
+    { Id: 'b', Type: 'AudioBook', Name: 'Second', Path: '/book/CH02 SECOND.mp3' },
+  ];
+  const result = genericNormalizeChapters(items);
+  assert.equal(result.chapters[0].id, 'a');
+  assert.equal(result.chapters[1].id, 'b');
+  assert.equal(result.chapters[2].id, 'c');
+});
+
+test('generic chapter normalization preserves UserData fields', () => {
+  const items = [{
+    Id: 'ch', Type: 'AudioBook', Name: 'Chapter', Path: '/book/CH01.mp3',
+    RunTimeTicks: 50000000,
+    UserData: { PlaybackPositionTicks: 10000000, Played: false, LastPlayedDate: '2026-10-08' },
+    MediaSources: [{ Id: 'src-1', Container: 'mp3' }],
+  }];
+  const ch = genericNormalizeChapters(items).chapters[0];
+  assert.equal(ch.runTimeTicks, 50000000);
+  assert.equal(ch.positionTicks, 10000000);
+  assert.equal(ch.played, false);
+  assert.equal(ch.lastPlayedDate, '2026-10-08');
+  assert.equal(ch.mediaSourceId, 'src-1');
+  assert.equal(ch.container, 'mp3');
+  assert.equal(ch.title, 'Chapter');
+  assert.equal(ch.path, '/book/CH01.mp3');
+});
+
+test('generic chapter normalization handles missing optional fields gracefully', () => {
+  const ch = genericNormalizeChapters([{ Id: 'ch', Type: 'AudioBook', Path: '/book/CH01.mp3' }]).chapters[0];
+  assert.equal(ch.runTimeTicks, 0);
+  assert.equal(ch.positionTicks, 0);
+  assert.equal(ch.played, false);
+  assert.equal(ch.lastPlayedDate, '');
+  assert.equal(ch.mediaSourceId, 'ch');  // falls back to item.Id
+  assert.equal(ch.container, '');
+  assert.equal(ch.title, '');
+});
+
+test('generic chapter normalization sorts by path when chapter numbers tie', () => {
+  const items = [
+    { Id: 'b', Type: 'AudioBook', Path: '/book/CH01 B.mp3', Name: 'B', IndexNumber: 1 },
+    { Id: 'a', Type: 'AudioBook', Path: '/book/CH01 A.mp3', Name: 'A', IndexNumber: 1 },
+  ];
+  const result = genericNormalizeChapters(items);
+  assert.equal(result.chapters[0].id, 'a');  // 'A' < 'B' by path
+  assert.equal(result.chapters[1].id, 'b');
 });
 
 test('chapter normalization flags missing and duplicate chapter numbers', () => {
