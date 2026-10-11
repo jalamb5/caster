@@ -1,5 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#121216"/>
-  <rect x="16" y="16" width="480" height="480" rx="100" fill="none" stroke="#2c2c36" stroke-width="8"/>
-  <text x="256" y="330" font-size="280" text-anchor="middle">🎙️</text>
+  <circle cx="256" cy="256" r="252" fill="#16120a"/>
+  <!-- Outer ring -->
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#2a2115" stroke-width="4"/>
+  <!-- Play triangle centered at 256,256, pointing right -->
+  <polygon points="336,256 206,169 206,343" fill="#ffa02e"/>
 </svg>

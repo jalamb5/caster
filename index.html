@@ -11,8 +11,8 @@
 <meta name="color-scheme" content="dark">
 <title>Caster — podcasts and audiobooks</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
 <style>
 :root{
   --bg:#16120a; --surface:#1f1910; --surface2:#2a2115; --line:#352a19;
@@ -1127,7 +1127,7 @@ function getLastNightSummary(){
   const todayHours = new Date(now).getHours();
   // Find the most recent night that is not today
   const sortedKeys = [...nights.keys()].sort();
-  const lastKey = sortedKeys.findLast(k => k !== todayKey) || null;
+  const lastKey = (sortedKeys.filter(k => k !== todayKey).slice(-1)[0]) || null;
   if(!lastKey) return null;
   // Only show in the morning window (4:00–12:00)
   if(todayHours < 4 || todayHours >= 12) return null;
@@ -1549,12 +1549,11 @@ window.addEventListener('visibilitychange', () => {
 window.addEventListener('pageshow', (e) => {
   if(!e.persisted || playerMode !== 'audiobook') return;
   // Restored from bfcache — audio state is gone, refresh from server position
-  const book = bookById(audiobookActiveBookId);
-  if(!book || !audiobookActiveChapterId) return;
-  const chapter = chapterById(book.id, audiobookActiveChapterId);
+  if(!audiobookActiveBookId || !audiobookActiveChapterId) return;
+  const chapter = chapterById(audiobookActiveBookId, audiobookActiveChapterId);
   if(!chapter) return;
   audiobookSession = null;
-  startAudiobookSession(book, chapter, {positionTicks: chapter.positionTicks, autoplay: false});
+  startAudiobookSession({ id: audiobookActiveBookId }, chapter, {positionTicks: chapter.positionTicks, autoplay: false});
 });
 
 
@@ -1578,7 +1577,7 @@ $('#booksBtn').addEventListener('click', openAudiobookView);
 $('#back15').addEventListener('click', () => { audio.currentTime = Math.max(0, audio.currentTime - 15); });
 $('#fwd30').addEventListener('click', () => { audio.currentTime = Math.min(audio.duration||1e9, audio.currentTime + 30); });
 $('#restartChip').addEventListener('click', () => {
-  if(playerMode==='audiobook'){const chapter=currentAudiobookChapter(),book=bookById(audiobookActiveBookId);if(chapter&&book)playAudiobook(book.id,chapter.id,{positionTicks:0});return;}
+  if(playerMode==='audiobook'){const chapter=currentAudiobookChapter();if(chapter)playAudiobook(audiobookActiveBookId,chapter.id,{positionTicks:0});return;}
   const ep=current();if(ep)playEpisode(currentShow(),ep,{reset:true});
 });
 $('#markHeardChip').addEventListener('click', () => { const ep = current(); if(ep){ markHeard(ep); saveState(); toast('Marked heard — it will fade for a while'); renderAll(); } });
