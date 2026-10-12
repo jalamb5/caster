@@ -2,69 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient, genericNormalizeChapters, createDeviceId } from '../jellyfin.mjs';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from '../sleep.mjs';
+import { script, source as executable, bootCaster, flushChains } from './harness.mjs';
 
-const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const manifest = JSON.parse(await readFile(new URL('../manifest.webmanifest', import.meta.url), 'utf8'));
 assert.match(manifest.name,/podcasts and audiobooks/);
 assert.match(manifest.description,/Jellyfin audiobooks/);
-const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
 assert.ok(script, 'index.html has an inline module application script');
-const execSource = source => source.replace(/^import .*;\s*/gm, '').replace(/renderAll\(\);\s*loadBundledShows\(\)\.then\(renderAll\);\s*$/, '');
-const executable = execSource(script);
 const duplicateDefinitions = name => (executable.match(new RegExp(`function ${name}\\(`,'g')) || []).length;
 assert.equal(duplicateDefinitions('pause'),1,'player handlers have one authoritative definition');
 assert.equal(duplicateDefinitions('togglePlay'),1,'player handlers have one authoritative definition');
 assert.equal(duplicateDefinitions('skipCurrent'),1,'player handlers have one authoritative definition');
 assert.doesNotMatch(executable,/sessionStorage|accessToken.*(?:localStorage|sessionStorage)/);
-
-function bootCaster(source=execSource(script)) {
-  const elements = new Map();
-  const element = id => {
-    if (elements.has(id)) return elements.get(id);
-    const e = {
-      id,
-      style: {},
-      dataset: {},
-      classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-      addEventListener(){},
-      removeEventListener(){},
-      querySelector(){ return element(`${id}:child`); },
-      querySelectorAll(){ return []; },
-      setAttribute(){}, removeAttribute(){},
-      getBoundingClientRect(){ return {left:0,top:0,width:100,height:10}; },
-      play(){ this.paused = false; this.playCalls = (this.playCalls || 0) + 1; return Promise.resolve(); },
-      pause(){ this.paused = true; },
-      paused: true, currentTime: 0, duration: 0, playbackRate:1,
-      textContent:'', innerHTML:'', src:'', value:'',
-    };
-    elements.set(id,e);
-    return e;
-  };
-  const store = new Map([['caster.jellyfin.server','https://example.test']]);
-  const document = {
-    querySelector: s => element(s.replace(/^#/,'')),
-    querySelectorAll: () => [],
-    getElementById: id => element(id),
-    createElement: () => element(`created-${elements.size}`),
-    head:{appendChild(){}},
-    body:{classList:{add(){},remove(){}}},
-  };
-  const window = {scrollTo(){}, addEventListener(){}, location:{href:'https://example.test/'} };
-  const navigator = {mediaSession:{setPositionState(){},setActionHandler(){},playbackState:'paused'}};
-  const context = vm.createContext({
-    document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient, genericNormalizeChapters, createDeviceId,
-    appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate,
-    localStorage:{get length(){return store.size},getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k),key:i=>Array.from(store.keys())[i]??null,[Symbol.iterator]:function*(){for(const entry of store)yield entry}},
-    sessionStorage:{getItem:k=>store.get(`session:${k}`)??null,setItem:(k,v)=>store.set(`session:${k}`,String(v)),removeItem:k=>store.delete(`session:${k}`)},
-    fetch:async()=>({ok:false,status:404,json:async()=>({})}),
-    DOMParser:class{}, URL, URLSearchParams, AbortController, MediaMetadata:class{},
-    setTimeout:()=>0, clearTimeout(){}, setInterval:()=>0, Math, Date, Map, Set, Object, String, Number, Array, Promise, Error, isFinite, console,
-  });
-  vm.runInContext(source, context);
-  return {context, elements, store, script:executable};
-}
 
 test('podcast flow retains random next and shuffle-all behavior', async () => {
   const {context} = bootCaster();
@@ -274,13 +222,6 @@ const CASTER_CLIENT = `{
   getFolderItems:async()=>({Items:[{Id:'f1',Name:'Series Folder',Type:'Folder'}]}),
 }`;
 
-const flushChains = async (context, rounds=4) => {
-  for(let i=0;i<rounds;i++){
-    await new Promise(r=>setImmediate(r));
-    await vm.runInContext('Promise.resolve(audiobookReportChain).catch(()=>{})',context);
-  }
-};
-
 test('a playback progress report never mutates browse navigation', async () => {
   const {context}=bootCaster();
   const value=await vm.runInContext(`(()=>{
@@ -379,7 +320,11 @@ test('every literal module import and bundled fetch in the shell is cache-busted
   assert.ok(specs.some(s=>s.startsWith('./jellyfin.mjs')),'jellyfin.mjs is imported');
   assert.ok(specs.some(s=>s.startsWith('./sleep.mjs')),'sleep.mjs is imported');
   assert.ok(specs.some(s=>s.startsWith('feeds.json')),'feeds.json is fetched');
-  for(const spec of specs) assert.match(spec,/\?v=3$/,`${spec} must carry ?v=3 so a pushed fix reaches cached phones`);
+  // all three must agree on one version (the rule), and never fall behind the floor
+  const versions = specs.map(s => (s.match(/\?v=(\d+)$/) || [])[1]);
+  assert.ok(versions.every(v => v), `every shell specifier needs a cache-bust: ${specs.join(', ')}`);
+  assert.equal(new Set(versions).size, 1, `all three specifiers must agree on one version, got ${versions.join(',')}`);
+  assert.ok(Number(versions[0]) >= 3, `version must be at least 3 (pre-cache-bust), got ${versions[0]}`);
 });
 
 /* ---- harness invariant: a module export the vm can't see makes a whole
@@ -508,6 +453,33 @@ test('leaving audiobook mode clears every piece of held playback state', () => {
   assert.equal(value.list,null);
   assert.equal(value.title,'');
   assert.equal(value.resolves,null);
+});
+
+test('a hung PlaybackInfo surfaces a visible error without stopping playback', async () => {
+  const {context, elements} = bootCaster();
+  vm.runInContext(`(()=>{
+    window.MediaMetadata=class{constructor(v){Object.assign(this,v)}};
+    // fire ONLY the session timeout (8000ms); every other app timer stays inert
+    setTimeout = (fn, ms) => { if(ms === 8000) fn(); return 0; };
+    audiobookClient={ getPlaybackInfo:()=>new Promise(()=>{}) };
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    audiobooksNav=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0}];
+    audiobooksNavTitle='A Book Title';
+    playerMode='audiobook'; currentShowId=null; currentGuid=null;
+    audio.playCalls=0;
+    playAudiobook('bryson','c1',{positionTicks:0,autoplay:true});
+  })()`,context);
+  await flushChains(context);
+  const state=vm.runInContext('({err:audiobookError,plays:audio.playCalls,session:!!audiobookSession})',context);
+  assert.match(state.err, /Jellyfin did not respond/,
+    'a session that never settles must say so instead of failing silently');
+  assert.match(state.err, /won't be saved/);
+  assert.ok(state.plays>=1,'playback must still start');
+  assert.equal(state.session,false);
+  vm.runInContext('renderOverlay()',context);
+  assert.equal(elements.get('ovError').textContent, state.err,
+    'the player itself must show the error, not only the list view');
+  assert.equal(elements.get('ovError').style.display, '');
 });
 
 test('chapter rows and the resume button bind to the folder being browsed', () => {

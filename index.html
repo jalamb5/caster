@@ -209,6 +209,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
   <img class="art" id="ovArt" alt="">
   <div class="ot" id="ovTitle"></div>
   <div class="os" id="ovShow"></div>
+  <div class="os" id="ovError" style="display:none;color:var(--danger)"></div>
   <div class="track" id="track"><div class="rail"><div class="fill" id="ovFill"></div><div class="knob" id="ovKnob"></div></div></div>
   <div class="times"><span id="ovCur">0:00</span><span id="ovDur">–:––</span></div>
   <div class="controls">
@@ -238,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=3';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=3';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=4';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=4';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -367,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=3');
+    const r = await fetch('feeds.json?v=4');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -926,6 +927,18 @@ async function stopAudiobookSession(){
   await queueAudiobookReport('stopped',position,true);
   audiobookSession=null;
 }
+// A Jellyfin round-trip that never settles used to leave the chapter loaded but silent:
+// no session, no reports, no error anywhere on screen. Give up loudly instead.
+const SESSION_TIMEOUT_MS = 8000;
+function withSessionTimeout(promise){
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(
+      'Jellyfin did not respond — this chapter will play, but its position won\'t be saved'
+    )), SESSION_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 async function startAudiobookSession(book,chapter,{positionTicks=chapter.positionTicks||0,autoplay=true}={}){
   if(!audiobookClient) throw new Error('Sign in to Jellyfin first');
   const generation=++audiobookPlaybackGeneration;
@@ -970,7 +983,7 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
       })
     : Promise.resolve();
   try{
-    const info=await audiobookClient.getPlaybackInfo(chapter);
+    const info=await withSessionTimeout(audiobookClient.getPlaybackInfo(chapter));
     if(generation!==audiobookPlaybackGeneration) return;
     const source=info.MediaSources?.find(x=>x.Id===chapter.mediaSourceId) || info.MediaSources?.[0];
     if(!info.PlaySessionId || !source?.Id) throw new Error('PlaybackInfo did not return a session and media source');
@@ -1395,6 +1408,11 @@ function renderOverlay(){
   if(art) $('#ovArt').src = art;
   $('#ovTitle').textContent = ep.title || '';
   $('#ovShow').textContent = isBook ? `${show?.title || 'Harry Potter'} · Chapter ${ep.chapterNumber}` : (show?.title || '');
+  // Session failures used to be invisible from the player — the only surfacing was a
+  // banner on the list view you have to navigate back to.
+  const err = isBook ? audiobookError : '';
+  $('#ovError').textContent = err || '';
+  $('#ovError').style.display = err ? '' : 'none';
   $('#ovPlay').textContent = audio.paused ? '▶' : '❚❚';
   $('#ovNext').setAttribute('aria-label', isBook ? 'Next chapter' : 'Skip to a new random episode');
   $('#ovPrev').style.display = isBook ? '' : 'none';
