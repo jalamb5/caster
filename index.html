@@ -238,8 +238,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=2';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=3';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=3';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -367,7 +367,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=2');
+    const r = await fetch('feeds.json?v=3');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -600,6 +600,11 @@ let audiobookReportTimer = null;
 let audiobookReportChain = Promise.resolve();
 let audiobookPlaybackGeneration = 0;
 let audiobookPendingResume = null;
+// Playback state, deliberately independent of the browse view: audiobooksNav is
+// whatever folder the reader last opened and must never decide what is playing.
+let audiobookActiveChapter = null;      // the chapter object itself
+let audiobookActiveChapterList = null;  // its book's chapter array, captured at start
+let audiobookActiveBookTitle = '';      // book title for the player bar / media session
 // Retained for backward compat with getHarryPotterBooks
 let audiobookBooks = [];
 let audiobookRootId = null;
@@ -657,12 +662,12 @@ async function tryResumeJellyfinSession(){
 
 const current = () => {
   if(playerMode === 'audiobook'){
-    return audiobooksNav.find(i => i.id === audiobookActiveChapterId) || null;
+    return currentAudiobookChapter();
   }
   return currentShowId ? showById(currentShowId)?.episodes.find(e => e.guid === currentGuid) : null;
 };
 const currentShow = () => playerMode === 'audiobook'
-  ? audiobooksNav.find(i => i.id === audiobookActiveBookId) || null
+  ? (currentAudiobookChapter() ? { id: audiobookActiveBookId, title: audiobookActiveBookTitle } : null)
   : showById(currentShowId) || null;
 function audiobookResumeTarget(book){
   const chapters = book?.chapters || book?.items;
@@ -687,6 +692,7 @@ function applyAudiobookResumePosition(){
 function clearJellyfinLogin(){
   audiobookClient = null; audiobookUser = null; audiobookBooks = []; audiobookRootId = null;
   audiobooksNav = []; audiobooksNavTitle = ''; audiobooksNavBack = []; audiobooksNavParentId = null;
+  adoptAudiobookChapter(null, null);
   try{ localStorage.removeItem(JELLYFIN_TOKEN_KEY); }catch(e){}
 }
 async function connectJellyfin(serverUrl, username, password){
@@ -841,14 +847,49 @@ async function refreshHarryPotterBooks(){
 // Retained for compat
 function bookById(id){ return audiobookBooks.find(book=>book.id===id) || null; }
 function chapterById(bookId, chapterId){
+  if(!chapterId) return null;
   const c = audiobooksNav.find(i => i.id === chapterId);
   if(c) return c;
+  if(bookId === audiobookActiveBookId && audiobookActiveChapterList){
+    const held = audiobookActiveChapterList.find(ch=>ch.id===chapterId);
+    if(held) return held;
+  }
   return bookById(bookId)?.chapters.find(ch=>ch.id===chapterId) || null;
 }
-function currentAudiobookChapter(){ return chapterById(audiobookActiveBookId,audiobookActiveChapterId); }
+function currentAudiobookChapter(){
+  const id = audiobookActiveChapterId;
+  if(!id) return null;
+  // Fast path: the chapter we are playing, held as playback state so that
+  // browsing (progress refresh, backing out to the folder list) cannot lose it.
+  if(audiobookActiveChapter && audiobookActiveChapter.id === id) return audiobookActiveChapter;
+  const resolved = chapterById(audiobookActiveBookId, id);
+  if(resolved) adoptAudiobookChapter(audiobookActiveBookId, resolved);
+  return resolved;
+}
+// Single writer for "this is what is playing": keeps the chapter, its book's
+// chapter list and the book title together, independent of audiobooksNav.
+function adoptAudiobookChapter(bookId, chapter){
+  const sameBook = bookId === audiobookActiveBookId;
+  audiobookActiveBookId = bookId;
+  audiobookActiveChapterId = chapter ? chapter.id : null;
+  audiobookActiveChapter = chapter || null;
+  if(chapter){
+    const held = sameBook && audiobookActiveChapterList && audiobookActiveChapterList.some(c=>c.id===chapter.id)
+      ? audiobookActiveChapterList : null;
+    audiobookActiveChapterList = bookById(bookId)?.chapters
+      || (audiobooksNav.some(c=>c.id===chapter.id) ? audiobooksNav : null)
+      || held;
+    const navTitle = audiobooksNavTitle && audiobooksNavTitle !== 'Audiobooks' ? audiobooksNavTitle : '';
+    audiobookActiveBookTitle = bookById(bookId)?.title || navTitle || (sameBook ? audiobookActiveBookTitle : '');
+  } else {
+    audiobookActiveChapterList = null;
+    audiobookActiveBookTitle = '';
+  }
+}
 function getCurrentChapters(bookId = audiobookActiveBookId){
   const hpBook = bookById(bookId);
   if(hpBook) return hpBook.chapters;
+  if(bookId === audiobookActiveBookId && audiobookActiveChapterList) return audiobookActiveChapterList;
   return audiobooksNav;
 }
 function cancelAudiobookReportTimer(){ if(audiobookReportTimer){clearTimeout(audiobookReportTimer);audiobookReportTimer=null;} }
@@ -863,7 +904,6 @@ function queueAudiobookReport(kind, positionSeconds=audio.currentTime, isPaused=
       if(kind==='started') await client.reportStarted(chapter,session);
       else if(kind==='stopped') await client.reportStopped(chapter,session,safePosition);
       else await client.reportProgress(chapter,session,safePosition,isPaused);
-      if(kind!=='started' && client===audiobookClient) refreshHarryPotterBooks();
       return true;
     }catch(error){
       if(client===audiobookClient){
@@ -904,7 +944,7 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
       try{await oldClient.reportStopped(oldChapter,oldSession,Number.isFinite(oldPosition)?oldPosition:null);}catch(e){}
     });
   }
-  audiobookActiveBookId=book.id; audiobookActiveChapterId=chapter.id;
+  adoptAudiobookChapter(book.id, chapter);
   audiobookSession=null;
   playerMode='audiobook'; currentShowId=null; currentGuid=null;
   // Remember this as the resume target so the root view can offer quick-start
@@ -927,19 +967,26 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
   audiobookPendingResume={chapterId:chapter.id,seconds:ticksToSeconds(startTicks)||0,generation};
   chapter.positionTicks=startTicks;
   renderAll();
+  // Play FIRST: advancing to the next chapter must not wait on — or be lost behind —
+  // two Jellyfin round-trips. The session is set up alongside, not ahead of, playback.
+  const playAttempt = autoplay
+    ? audio.play().catch(error=>{
+        if(generation===audiobookPlaybackGeneration && error?.name!=='AbortError') toast('Playback blocked — tap play');
+      })
+    : Promise.resolve();
   try{
     const info=await audiobookClient.getPlaybackInfo(chapter);
     if(generation!==audiobookPlaybackGeneration) return;
     const source=info.MediaSources?.find(x=>x.Id===chapter.mediaSourceId) || info.MediaSources?.[0];
     if(!info.PlaySessionId || !source?.Id) throw new Error('PlaybackInfo did not return a session and media source');
     audiobookSession={playSessionId:info.PlaySessionId,mediaSourceId:source.Id};
+    // The 'play' event fired before the session existed, so the report loop starts here.
+    scheduleAudiobookProgress();
     await queueAudiobookReport('started',ticksToSeconds(startTicks)||0,false);
   }catch(error){
     if(generation===audiobookPlaybackGeneration){audiobookError=error?.message || 'Could not start Jellyfin playback session';renderAll();}
   }
-  if(autoplay){
-    try{await audio.play();}catch(error){toast('Playback blocked — tap play');}
-  }
+  await playAttempt;
   updateMediaSession();renderAll();
 }
 function playAudiobook(bookId,chapterId,{positionTicks,autoplay=true}={}){

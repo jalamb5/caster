@@ -34,7 +34,7 @@ function bootCaster(source=execSource(script)) {
       querySelectorAll(){ return []; },
       setAttribute(){}, removeAttribute(){},
       getBoundingClientRect(){ return {left:0,top:0,width:100,height:10}; },
-      play(){ this.paused = false; return Promise.resolve(); },
+      play(){ this.paused = false; this.playCalls = (this.playCalls || 0) + 1; return Promise.resolve(); },
       pause(){ this.paused = true; },
       paused: true, currentTime: 0, duration: 0, playbackRate:1,
       textContent:'', innerHTML:'', src:'', value:'',
@@ -263,4 +263,119 @@ test('pause and togglePlay definitions are not duplicated', () => {
   assert.equal((script.match(/function pause\(/g)||[]).length,1);
   assert.equal((script.match(/function togglePlay\(/g)||[]).length,1);
   assert.equal((script.match(/function skipCurrent\(/g)||[]).length,1);
+});
+
+/* ---- chapter auto-advance: the overnight regression (see ISA F3) ---- */
+
+const CASTER_CLIENT = `{
+  reportStopped:async()=>{}, reportStarted:async()=>{}, reportProgress:async()=>{},
+  getPlaybackInfo:async ch=>({PlaySessionId:'s-'+ch.id,MediaSources:[{Id:ch.id||'src'}]}),
+  getAudiobooksCatalogue:async()=>({libraryId:'lib'}),
+  getFolderItems:async()=>({Items:[{Id:'f1',Name:'Series Folder',Type:'Folder'}]}),
+}`;
+
+const flushChains = async (context, rounds=4) => {
+  for(let i=0;i<rounds;i++){
+    await new Promise(r=>setImmediate(r));
+    await vm.runInContext('Promise.resolve(audiobookReportChain).catch(()=>{})',context);
+  }
+};
+
+test('a playback progress report never mutates browse navigation', async () => {
+  const {context}=bootCaster();
+  const value=await vm.runInContext(`(()=>{
+    audiobookClient=${CASTER_CLIENT};
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    audiobooksNav=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0},{id:'c2',title:'two',chapterNumber:2,positionTicks:0}];
+    audiobooksNavTitle='A Book Title';
+    audiobooksNavBack=[{title:'Audiobooks',parentId:null}];
+    audiobooksNavParentId='folder';
+    audiobookActiveBookId='bryson'; audiobookActiveChapterId='c1';
+    audiobookActiveChapter=audiobooksNav[0]; audiobookActiveChapterList=audiobooksNav;
+    playerMode='audiobook';
+    audiobookSession={playSessionId:'s',mediaSourceId:'c1'};
+    audio.paused=false; audio.currentTime=120;
+    const snap=()=>JSON.stringify({nav:audiobooksNav,title:audiobooksNavTitle,back:audiobooksNavBack,parent:audiobooksNavParentId});
+    const before=snap();
+    return queueAudiobookReport('progress',120,false)
+      .then(()=>Promise.resolve(audiobookReportChain))
+      .then(()=>({before,after:snap(),chapter:currentAudiobookChapter()&&currentAudiobookChapter().id}));
+  })()`,context);
+  assert.equal(value.after,value.before,'progress reporting must not touch audiobooksNav*');
+  assert.equal(value.chapter,'c1','the active chapter must survive the report');
+});
+
+test('chapter resolution survives the browse view being replaced', async () => {
+  const {context}=bootCaster();
+  const value=vm.runInContext(`(()=>{
+    audiobookClient=${CASTER_CLIENT};
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    const chapters=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0},{id:'c2',title:'two',chapterNumber:2,positionTicks:0}];
+    audiobooksNav=chapters; audiobooksNavTitle='A Book Title';
+    audiobookActiveBookId='bryson'; audiobookActiveChapterId='c1';
+    adoptAudiobookChapter('bryson',chapters[0]);
+    playerMode='audiobook'; currentShowId=null; currentGuid=null;
+    // the reader backs out to the folder list mid-listen
+    audiobooksNav=[{id:'f1',name:'Series Folder',type:'Folder'}];
+    audiobooksNavTitle='Audiobooks'; audiobooksNavBack=[];
+    return {
+      chapter: currentAudiobookChapter() && currentAudiobookChapter().id,
+      list: getCurrentChapters().map(c=>c.id),
+      current: current() && current().id,
+      show: currentShow() && currentShow().title,
+    };
+  })()`,context);
+  assert.equal(value.chapter,'c1');
+  assert.equal(value.list.join(','),'c1,c2');
+  assert.equal(value.current,'c1','the player bar must keep showing the playing chapter');
+  assert.equal(value.show,'A Book Title');
+});
+
+test('chapter end advances and plays the next chapter with no tap, after a progress report', async () => {
+  const {context}=bootCaster();
+  await vm.runInContext(`(()=>{
+    window.MediaMetadata=class{constructor(v){Object.assign(this,v)}};
+    audiobookClient=${CASTER_CLIENT};
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    audiobooksNav=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0},{id:'c2',title:'two',chapterNumber:2,positionTicks:0}];
+    audiobooksNavTitle='A Book Title';
+    audiobookActiveBookId='bryson'; audiobookActiveChapterId='c1';
+    playerMode='audiobook'; currentShowId=null; currentGuid=null;
+    audiobookSession={playSessionId:'s',mediaSourceId:'c1'};
+    audio.paused=true; audio.currentTime=0; audio.playCalls=0;
+    return queueAudiobookReport('progress',10,false);
+  })()`,context);
+  await flushChains(context);
+  await vm.runInContext('audio.paused=true; audio.ended=true; next()',context);
+  await flushChains(context);
+  const state=vm.runInContext('({chapter:audiobookActiveChapterId,src:audio.src,plays:audio.playCalls})',context);
+  assert.equal(state.chapter,'c2','ended must advance to the next chapter');
+  assert.match(state.src,/Audio\/c2/);
+  assert.ok(state.plays>=1,'audio.play() must be called without further user input');
+});
+
+test('a hung PlaybackInfo cannot stop the chapter from starting', async () => {
+  const {context}=bootCaster();
+  vm.runInContext(`(()=>{
+    window.MediaMetadata=class{constructor(v){Object.assign(this,v)}};
+    audiobookClient={ getPlaybackInfo:()=>new Promise(()=>{}) };
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    audiobooksNav=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0}];
+    audiobooksNavTitle='A Book Title';
+    playerMode='audiobook'; currentShowId=null; currentGuid=null;
+    audio.playCalls=0;
+    playAudiobook('bryson','c1',{positionTicks:0,autoplay:true});
+  })()`,context);
+  await new Promise(r=>setImmediate(r));
+  await new Promise(r=>setImmediate(r));
+  const plays=vm.runInContext('audio.playCalls',context);
+  assert.ok(plays>=1,'playback must start before any awaited Jellyfin round-trip');
+});
+
+test('every bundled module import and asset fetch is cache-busted', () => {
+  const specs=[...script.matchAll(/from '([^']+)'|fetch\('([^']+)'\)/g)].map(m=>m[1]||m[2]);
+  assert.ok(specs.some(s=>s.startsWith('./jellyfin.mjs')),'jellyfin.mjs is imported');
+  assert.ok(specs.some(s=>s.startsWith('./sleep.mjs')),'sleep.mjs is imported');
+  assert.ok(specs.some(s=>s.startsWith('feeds.json')),'feeds.json is fetched');
+  for(const spec of specs) assert.match(spec,/\?v=3$/,`${spec} must carry ?v=3 so a pushed fix reaches cached phones`);
 });
