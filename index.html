@@ -760,11 +760,8 @@ async function navigateAudiobooksToFolder(folderId, folderName){
     if(audioItems.some(i => i.Type === 'AudioBook')){
       const normalized = genericNormalizeChapters(audioItems);
       audiobooksNav = normalized.chapters;
-      audiobookActiveBookId = folderId;
-      // Try auto-resume
-      const resume = audiobookResumeTarget({ items: audiobooksNav });
-      if(resume) audiobookActiveChapterId = resume.chapter.id;
-      // Push back nav
+      // Browse state only — opening a folder must never change what is playing.
+      // audiobooksNavParentId is the book id these chapter rows belong to.
       audiobooksNavBack.push({ title: audiobooksNavTitle, parentId: audiobooksNavParentId });
       audiobooksNavTitle = folderName;
       audiobooksNavParentId = folderId;
@@ -795,7 +792,6 @@ async function navigateAudiobookBack(){
     if((items.Items || []).some(i => i.Type === 'AudioBook')){
       const normalized = genericNormalizeChapters(items.Items || []);
       audiobooksNav = normalized.chapters;
-      audiobookActiveBookId = prev.parentId;
       audiobooksNavTitle = prev.title;
       audiobooksNavParentId = prev.parentId;
       audiobookLibraryState = 'ready';
@@ -824,13 +820,11 @@ async function resumeAudiobookQuick(){
     if(!audioItems.length) throw new Error('That book no longer has playable chapters');
     const normalized = genericNormalizeChapters(audioItems);
     audiobooksNav = normalized.chapters;
-    audiobookActiveBookId = audiobookResume.bookId;
     audiobookLibraryState = 'ready';
     // Pick the resume chapter or the first one
     const chapter = audiobooksNav.find(c => c.id === audiobookResume.chapterId) || audiobooksNav[0];
     if(chapter){
-      audiobookActiveChapterId = chapter.id;
-      playAudiobook(audiobookActiveBookId, chapter.id, { positionTicks: chapter.positionTicks || 0, autoplay: true });
+      playAudiobook(audiobookResume.bookId, chapter.id, { positionTicks: chapter.positionTicks || 0, autoplay: true });
     } else {
       renderAll();
     }
@@ -839,10 +833,6 @@ async function resumeAudiobookQuick(){
     audiobookError = e.message;
     renderAll();
   }
-}
-async function refreshHarryPotterBooks(){
-  if(!audiobookClient) return;
-  await navigateAudiobooksToRoot();
 }
 // Retained for compat
 function bookById(id){ return audiobookBooks.find(book=>book.id===id) || null; }
@@ -859,8 +849,11 @@ function chapterById(bookId, chapterId){
 function currentAudiobookChapter(){
   const id = audiobookActiveChapterId;
   if(!id) return null;
-  // Fast path: the chapter we are playing, held as playback state so that
-  // browsing (progress refresh, backing out to the folder list) cannot lose it.
+  // The browse list, when it holds this chapter, is fresher than the copy captured at
+  // playback start (server positions move) — take it. Otherwise fall back to the held
+  // chapter, which is what survives the list being replaced by the folder list.
+  const fresh = audiobooksNav.find(i => i.id === id);
+  if(fresh){ adoptAudiobookChapter(audiobookActiveBookId, fresh); return fresh; }
   if(audiobookActiveChapter && audiobookActiveChapter.id === id) return audiobookActiveChapter;
   const resolved = chapterById(audiobookActiveBookId, id);
   if(resolved) adoptAudiobookChapter(audiobookActiveBookId, resolved);
@@ -868,6 +861,8 @@ function currentAudiobookChapter(){
 }
 // Single writer for "this is what is playing": keeps the chapter, its book's
 // chapter list and the book title together, independent of audiobooksNav.
+// Because nothing else writes audiobookActiveBookId, the held list always belongs
+// to the active book — chapterById/getCurrentChapters rely on that.
 function adoptAudiobookChapter(bookId, chapter){
   const sameBook = bookId === audiobookActiveBookId;
   audiobookActiveBookId = bookId;
@@ -990,6 +985,7 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
   updateMediaSession();renderAll();
 }
 function playAudiobook(bookId,chapterId,{positionTicks,autoplay=true}={}){
+  if(!bookId) return; // a chapter row whose owning folder is unknown must not start playback
   const chapter = chapterById(bookId, chapterId);
   if(!chapter) return;
   startAudiobookSession({ id: bookId }, chapter, {positionTicks,autoplay});
@@ -1042,7 +1038,7 @@ async function playEpisode(show, ep, {reset=false}={}){
   if(playerMode === 'audiobook'){
     await stopAudiobookSession();
     playerMode='podcast';
-    audiobookActiveBookId=null; audiobookActiveChapterId=null; audiobookPendingResume=null;
+    adoptAudiobookChapter(null, null); audiobookPendingResume=null;
     audiobookPlaybackGeneration++;
   }
   currentShowId = show.id; currentGuid = ep.guid;
@@ -1307,7 +1303,7 @@ function openJellyfinSignIn(){
 }
 function renderAudiobookView(v){
   v.innerHTML=audiobookFooter();
-  $('#modePodcasts')?.addEventListener('click',()=>{playerMode='podcast';audiobookActiveBookId=null;audiobookActiveChapterId=null;renderAll()});
+  $('#modePodcasts')?.addEventListener('click',()=>{playerMode='podcast';adoptAudiobookChapter(null,null);renderAll()});
   $('#modeBooks')?.addEventListener('click',openAudiobookView);
   $('#jellyfinSignIn')?.addEventListener('click',openJellyfinSignIn);
   $('#jellyfinSignOut')?.addEventListener('click',()=>{clearJellyfinLogin();audiobookLibraryState='idle';renderAll()});
@@ -1316,10 +1312,12 @@ function renderAudiobookView(v){
   $('#abQuickResume')?.addEventListener('click',resumeAudiobookQuick);
   $('#abResume')?.addEventListener('click',()=>{
     const resume = audiobookResumeTarget({ items: audiobooksNav });
-    if(resume) playAudiobook(audiobookActiveBookId, resume.chapter.id, {positionTicks: resume.positionTicks});
+    if(resume && audiobooksNavParentId) playAudiobook(audiobooksNavParentId, resume.chapter.id, {positionTicks: resume.positionTicks});
   });
   v.querySelectorAll('[data-nav]').forEach(el => el.addEventListener('click',()=>navigateAudiobooksToFolder(el.dataset.nav, el.querySelector('.t')?.textContent?.replace(/^[^\s]+\s/,'') || '')));
-  v.querySelectorAll('[data-chapter]').forEach(el => el.addEventListener('click',()=>playAudiobook(audiobookActiveBookId, el.dataset.chapter, {positionTicks: audiobooksNav.find(c => c.id === el.dataset.chapter)?.positionTicks||0})));
+  // Chapter rows belong to the folder being browsed (audiobooksNavParentId), not to
+  // whatever happens to be playing — tapping a row must start THAT book.
+  v.querySelectorAll('[data-chapter]').forEach(el => el.addEventListener('click',()=>playAudiobook(audiobooksNavParentId, el.dataset.chapter, {positionTicks: audiobooksNav.find(c => c.id === el.dataset.chapter)?.positionTicks||0})));
 }
 
 function renderShowDetail(){

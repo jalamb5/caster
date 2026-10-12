@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient } from '../jellyfin.mjs';
+import { nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient, genericNormalizeChapters, createDeviceId } from '../jellyfin.mjs';
 import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from '../sleep.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
@@ -54,7 +54,7 @@ function bootCaster(source=execSource(script)) {
   const window = {scrollTo(){}, addEventListener(){}, location:{href:'https://example.test/'} };
   const navigator = {mediaSession:{setPositionState(){},setActionHandler(){},playbackState:'paused'}};
   const context = vm.createContext({
-    document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient,
+    document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient, genericNormalizeChapters, createDeviceId,
     appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate,
     localStorage:{get length(){return store.size},getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k),key:i=>Array.from(store.keys())[i]??null,[Symbol.iterator]:function*(){for(const entry of store)yield entry}},
     sessionStorage:{getItem:k=>store.get(`session:${k}`)??null,setItem:(k,v)=>store.set(`session:${k}`,String(v)),removeItem:k=>store.delete(`session:${k}`)},
@@ -243,7 +243,7 @@ test('chapter reports include duration-derived bounds', async () => {
   assert.equal(await result,0);
 });
 
-test('refreshing the catalogue retains an active selected book and chapter', async () => {
+test('navigating to the library root retains what is playing', async () => {
   const {context}=bootCaster();
   const result=vm.runInContext(`(()=>{
     audiobookUser={Id:'alice'};playerMode='audiobook';
@@ -253,7 +253,7 @@ test('refreshing the catalogue retains an active selected book and chapter', asy
       getAudiobooksCatalogue:async()=>({libraryId:'lib'}),
       getFolderItems:async()=>({Items:[{Id:'b',Name:'Book',Type:'Folder'}]}),
     };
-    return refreshHarryPotterBooks().then(()=>({book:audiobookActiveBookId,chapter:audiobookActiveChapterId}));
+    return navigateAudiobooksToRoot().then(()=>({book:audiobookActiveBookId,chapter:audiobookActiveChapterId}));
   })()`,context);
   const value=await result;
   assert.equal(value.book,'b');assert.equal(value.chapter,'ch');
@@ -372,10 +372,149 @@ test('a hung PlaybackInfo cannot stop the chapter from starting', async () => {
   assert.ok(plays>=1,'playback must start before any awaited Jellyfin round-trip');
 });
 
-test('every bundled module import and asset fetch is cache-busted', () => {
+// Scope: literal specifiers in the app shell. Dynamic fetches (search, artwork) and
+// manifest.webmanifest are not versioned by design — they are not shell assets.
+test('every literal module import and bundled fetch in the shell is cache-busted', () => {
   const specs=[...script.matchAll(/from '([^']+)'|fetch\('([^']+)'\)/g)].map(m=>m[1]||m[2]);
   assert.ok(specs.some(s=>s.startsWith('./jellyfin.mjs')),'jellyfin.mjs is imported');
   assert.ok(specs.some(s=>s.startsWith('./sleep.mjs')),'sleep.mjs is imported');
   assert.ok(specs.some(s=>s.startsWith('feeds.json')),'feeds.json is fetched');
   for(const spec of specs) assert.match(spec,/\?v=3$/,`${spec} must carry ?v=3 so a pushed fix reaches cached phones`);
+});
+
+/* ---- harness invariant: a module export the vm can't see makes a whole
+   code path throw inside the app's own try/catch, so tests pass while the
+   path is untestable. Catch that structurally, once. ---- */
+test('the vm harness injects every export that index.html imports', () => {
+  const imported=[...script.matchAll(/^import\s*\{([^}]+)\}\s*from/gm)]
+    .flatMap(m=>m[1].split(','))
+    .map(s=>s.trim())
+    .filter(Boolean);
+  assert.ok(imported.length>=2,'index.html imports its modules');
+  const {context}=bootCaster();
+  for(const name of imported){
+    assert.ok(name in context,
+      `${name} is imported by index.html but not injected into the vm context — every path using it would throw and be swallowed`);
+  }
+});
+
+/* ---- second-look findings 1/3/4: browse must never decide playback ---- */
+
+test('browsing into another folder while listening never changes what is playing', async () => {
+  const {context}=bootCaster();
+  const value=await vm.runInContext(`(async()=>{
+    const sent=[];
+    audiobookClient={
+      reportStopped:async()=>{}, reportStarted:async()=>{},
+      reportProgress:async(ch)=>sent.push(ch.id),
+      getPlaybackInfo:async ch=>({PlaySessionId:'s-'+ch.id,MediaSources:[{Id:ch.id}]}),
+      getAudiobooksCatalogue:async()=>({libraryId:'lib'}),
+      getFolderItems:async(id)=> id==='book-b'
+        ? {Items:[{Type:'AudioBook',Id:'c9',Name:'CH09 nine',Path:'/Book B/CH09.mp3',RunTimeTicks:1e10,UserData:{}}]}
+        : {Items:[{Id:'f1',Name:'Series Folder',Type:'Folder'}]},
+    };
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    const chapters=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0},{id:'c2',title:'two',chapterNumber:2,positionTicks:0}];
+    audiobooksNav=chapters; audiobooksNavTitle='Book A'; audiobooksNavParentId='book-a';
+    adoptAudiobookChapter('book-a', chapters[0]);
+    playerMode='audiobook'; currentShowId=null; currentGuid=null;
+    audiobookLibraryState='ready'; audiobooksNavBack=[{title:'Audiobooks',parentId:null}];
+    audiobookSession={playSessionId:'s',mediaSourceId:'c1'};
+    audio.paused=false; audio.currentTime=300;
+    // the reader backs out and opens a DIFFERENT book's folder mid-listen
+    await navigateAudiobooksToFolder('book-b','Book B');
+    const snapshot={book:audiobookActiveBookId,chapter:audiobookActiveChapterId,
+                    current:current()&&current().id,browse:audiobooksNavParentId};
+    await queueAudiobookReport('progress',300,false);
+    await Promise.resolve(audiobookReportChain);
+    return {snapshot,book:audiobookActiveBookId,chapter:audiobookActiveChapterId,
+            list:getCurrentChapters().map(c=>c.id),reported:sent};
+  })()`,context);
+  assert.equal(value.snapshot.book,'book-a','opening a folder must not rewrite the active book');
+  assert.equal(value.snapshot.chapter,'c1','opening a folder must not rewrite the active chapter');
+  assert.equal(value.snapshot.current,'c1','the player bar keeps showing what is playing');
+  assert.equal(value.snapshot.browse,'book-b','the browse target must still move to the opened folder');
+  assert.equal(value.book,'book-a');
+  assert.equal(value.chapter,'c1');
+  assert.equal(value.list.join(','),'c1,c2','the held chapter list belongs to the book being played');
+  assert.equal(value.reported.join(','),'c1','progress must be reported against the playing chapter');
+});
+
+test('going back to a chapter list while listening never changes what is playing', async () => {
+  const {context}=bootCaster();
+  const value=await vm.runInContext(`(async()=>{
+    audiobookClient={
+      reportStopped:async()=>{}, reportStarted:async()=>{}, reportProgress:async()=>{},
+      getPlaybackInfo:async ch=>({PlaySessionId:'s-'+ch.id,MediaSources:[{Id:ch.id}]}),
+      getAudiobooksCatalogue:async()=>({libraryId:'lib'}),
+      getFolderItems:async(id)=> ({Items:[{Type:'AudioBook',Id:'c7',Name:'CH07 seven',Path:'/Book C/CH07.mp3',RunTimeTicks:1e10,UserData:{}}]}),
+    };
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    const chapters=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0},{id:'c2',title:'two',chapterNumber:2,positionTicks:0}];
+    audiobooksNav=chapters; audiobooksNavTitle='Book A'; audiobooksNavParentId='book-a';
+    adoptAudiobookChapter('book-a', chapters[0]);
+    playerMode='audiobook'; currentShowId=null; currentGuid=null;
+    audiobookLibraryState='ready';
+    // the reader backed out to the folder list, and the back-stack now restores Book C
+    audiobooksNav=[{id:'f1',name:'Series Folder',type:'Folder'}];
+    audiobooksNavTitle='Audiobooks'; audiobooksNavParentId=null;
+    audiobooksNavBack=[{title:'Book C', parentId:'book-c'}];
+    await navigateAudiobookBack();
+    return {book:audiobookActiveBookId,chapter:audiobookActiveChapterId,
+            current:current()&&current().id,browse:audiobooksNavParentId,
+            list:getCurrentChapters().map(c=>c.id)};
+  })()`,context);
+  assert.equal(value.book,'book-a','restoring a chapter list must not rewrite the active book');
+  assert.equal(value.chapter,'c1','restoring a chapter list must not rewrite the active chapter');
+  assert.equal(value.current,'c1');
+  assert.equal(value.browse,'book-c','the browse target must still follow the back stack');
+  assert.equal(value.list.join(','),'c1,c2');
+});
+
+test('the chapter served for playback comes from the browse list, not a stale copy', () => {
+  const {context}=bootCaster();
+  const value=vm.runInContext(`(()=>{
+    audiobookClient=${CASTER_CLIENT};
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    const stale=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0}];
+    audiobooksNav=stale; audiobooksNavTitle='Book A';
+    adoptAudiobookChapter('book-a', stale[0]);
+    playerMode='audiobook';
+    // the list is refetched from the server: same id, fresher position
+    audiobooksNav=[{id:'c1',title:'one',chapterNumber:1,positionTicks:5000000000}];
+    const served=currentAudiobookChapter();
+    return {ticks:served.positionTicks, isFresh:served===audiobooksNav[0]};
+  })()`,context);
+  assert.equal(value.ticks,5000000000,'a newer server position must win over the copy captured at playback start');
+  assert.equal(value.isFresh,true);
+});
+
+test('leaving audiobook mode clears every piece of held playback state', () => {
+  const {context}=bootCaster();
+  const value=vm.runInContext(`(()=>{
+    audiobookUser={Id:'u'}; audiobookBooks=[];
+    const chapters=[{id:'c1',title:'one',chapterNumber:1,positionTicks:0}];
+    audiobooksNav=chapters; audiobooksNavTitle='Book A';
+    adoptAudiobookChapter('book-a', chapters[0]);
+    playerMode='audiobook';
+    adoptAudiobookChapter(null, null);
+    return {book:audiobookActiveBookId,chapter:audiobookActiveChapterId,
+            held:!!audiobookActiveChapter,list:audiobookActiveChapterList,
+            title:audiobookActiveBookTitle,resolves:currentAudiobookChapter()};
+  })()`,context);
+  assert.equal(value.book,null);
+  assert.equal(value.chapter,null);
+  assert.equal(value.held,false,'the held chapter must not survive the mode switch');
+  assert.equal(value.list,null);
+  assert.equal(value.title,'');
+  assert.equal(value.resolves,null);
+});
+
+test('chapter rows and the resume button bind to the folder being browsed', () => {
+  assert.match(script,/playAudiobook\(audiobooksNavParentId, el\.dataset\.chapter/,
+    'a tapped chapter row must start the book whose folder is open, not whatever is playing');
+  assert.match(script,/playAudiobook\(audiobooksNavParentId, resume\.chapter\.id/,
+    'the resume button must start the book whose folder is open');
+  assert.doesNotMatch(script,/playAudiobook\(audiobookActiveBookId, el\.dataset\.chapter/,
+    'row clicks must not resolve the book through playback state');
 });
