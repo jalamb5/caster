@@ -659,3 +659,33 @@ test('the diagnostics are reachable from the audiobook screen and copyable', () 
   assert.match(html, /id="diagCopy"/, 'the log must be copyable without typing anything by hand');
   assert.match(executable, /function openDiagModal/);
 });
+
+test('the render path only touches elements that exist in the static markup', async () => {
+  // The harness's $() answers with a fake element for ANY id, so a query that returns
+  // null in a real browser is invisible here. His phone reported
+  // "Cannot read properties of null (reading 'style')" the moment a session was created —
+  // this test makes that class reproducible: only ids present in the static HTML exist.
+  const {context} = bootCaster();
+  const staticIds = new Set(
+    Array.from(html.split('<script type="module">')[0].matchAll(/id="([^"]+)"/g), m => m[1]));
+  const orig = context.document.querySelector.bind(context.document);
+  context.document.querySelector = (sel) =>
+    staticIds.has(String(sel).replace(/^#/, '')) ? orig(sel) : null;
+  context.document.getElementById = (id) => staticIds.has(String(id)) ? orig('#' + id) : null;
+
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", context);
+  const chapters = chaptersOf('a book');
+  context.__client = makeJellyfinClient(chapters);
+  makeChapterContext(context, chapters);
+  vm.runInContext('audiobookClient=__client;', context, {timeout:5000});
+
+  await vm.runInContext(
+    "ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)", context, {timeout:5000});
+  await flushChains(context);
+  assert.equal(vm.runInContext('audiobookSessionState', context), 'ok',
+    'creating a session must not crash the render path');
+
+  // and the same once something is playing and the overlay is open
+  vm.runInContext("audio.paused=false; playerMode='audiobook'; renderAll();", context, {timeout:5000});
+  assert.equal(vm.runInContext('audiobookSessionState', context), 'ok');
+});

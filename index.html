@@ -629,7 +629,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-13c';
+const CASTER_BUILD = '2026-10-13d';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
@@ -1025,7 +1025,8 @@ async function ensureAudiobookSession(chapter, generation, positionSeconds){
     if(generation === audiobookPlaybackGeneration){
       audiobookSessionState = 'failed: ' + (error?.message || 'unknown');
       audiobookError = error?.message || 'Could not start Jellyfin playback session';
-      diag('session failed: ' + (error?.message || 'unknown'));
+      // the bare message said "null (reading 'style')" and named no line; the stack does
+      diag('session failed: ' + (error?.message || 'unknown') + (error?.stack ? ' | ' + error.stack.split('\n').slice(0,4).join(' <- ') : ''));
       renderAll();
     }
     return false;
@@ -1785,6 +1786,10 @@ window.caster = {
 renderAll();
 loadBundledShows().then(renderAll);
 // Try to restore a saved Jellyfin session without requiring a fresh sign-in
+// Uncaught errors were completely invisible: they killed a render, logged nothing and
+// left the app half-working. His phone reported "null (reading 'style')" and nothing else.
+window.addEventListener('error', (e) => diag(`uncaught: ${e?.message || ''} @ ${String(e?.filename || '').split('/').pop()}:${e?.lineno}:${e?.colno}`));
+window.addEventListener('unhandledrejection', (e) => diag('unhandled rejection: ' + (e?.reason?.message || e?.reason || 'unknown')));
 diag(`boot ${CASTER_BUILD}`);
 tryResumeJellyfinSession();
 </script>
