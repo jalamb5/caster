@@ -56,9 +56,12 @@ test('live: real app + real server — session, reports, advance, read-back', { 
     serverUrl: server, username, password, deviceId: 'caster-live-probe',
   });
 
-  // real chapters, loaded through the app's own catalogue path
+  // Real chapters, loaded through the app's own catalogue path.
+  // Deliberately the LAST book, never the one he is actually listening to: this probe
+  // writes a real position and a real LastPlayedDate, and if it shared his book it would
+  // pollute exactly the evidence used to diagnose his device (it did, once).
   const { books } = await client.getHarryPotterBooks();
-  const book = books[0];
+  const book = books[books.length - 1];
   assert.ok(book?.chapters?.length >= 2, 'the book has at least two chapters');
   const [ch1, ch2] = book.chapters;
   t.diagnostic(`book "${book.title}" — ${book.chapters.length} chapters, testing ${ch1.title} → ${ch2.title}`);
