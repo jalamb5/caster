@@ -492,22 +492,33 @@ test('the audiobook screen states its build, server host and session state', () 
     audiobookLibraryState='ready'; audiobooksNavBack=[];
     audiobooksNav=[{id:'f1',name:'Series Folder',type:'Folder'}];
     audiobooksNavTitle='Audiobooks';
-    audiobookSession=null; audiobookError='';
+    audiobookSession=null; audiobookError=''; audiobookSessionState='';
     renderAll();
     return document.querySelector('#view').innerHTML;
   })()`,context);
   assert.match(html, /id="abDiag"/, 'the diagnostic line must render on the audiobook screen');
   assert.match(html, /build \d{4}-\d{2}-\d{2}/, 'the build stamp must be readable off the screen');
   assert.match(html, /jellyfin\.example\.test/, 'the connected server host must be readable');
-  assert.match(html, /no session/, 'a missing playback session must be visible without a server probe');
+  assert.match(html, /idle/, 'an untouched player must read as idle, not as a session');
+  assert.doesNotMatch(html, /session ok/, 'idle must not read as healthy');
 
   const withSession = vm.runInContext(`(()=>{
     audiobookSession={playSessionId:'s',mediaSourceId:'m'}; audiobookError='';
-    playerMode='audiobook';
-    renderAll();
+    audiobookSessionState='ok';
+    playerMode='audiobook'; renderAll();
     return document.querySelector('#view').innerHTML;
   })()`,context);
   assert.match(withSession, /session ok/, 'a healthy session must read as healthy');
+
+  // a failure must survive navigation clearing audiobookError — that is the whole point
+  const afterFailure = vm.runInContext(`(()=>{
+    audiobookSession=null; audiobookError='';          // navigation wiped the error
+    audiobookSessionState='failed: Jellyfin did not respond';
+    playerMode='audiobook'; renderAll();
+    return document.querySelector('#view').innerHTML;
+  })()`,context);
+  assert.match(afterFailure, /failed: Jellyfin did not respond/,
+    'the sticky session state must still name the failure after navigation clears the banner');
 });
 
 test('chapter rows and the resume button bind to the folder being browsed', () => {
