@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=4';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=4';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=5';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=5';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -368,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=4');
+    const r = await fetch('feeds.json?v=5');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -624,6 +624,9 @@ function clearAudiobookResume(){
   try{ localStorage.removeItem(AUDIOBOOK_RESUME_KEY); }catch(e){}
 }
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
+// Shown on the audiobook screen so "which build is this phone running, and is it
+// actually connected" is answerable at a glance instead of by server forensics.
+const CASTER_BUILD = '2026-10-13';
 const JELLYFIN_DEFAULT_SERVER = '';
 const JELLYFIN_USER_STORAGE_KEY = 'caster.jellyfin.user';
 const JELLYFIN_TOKEN_KEY = 'caster.jellyfin.token';
@@ -1269,6 +1272,12 @@ function audiobookFooter(){
   const modeRow = '<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div>';
   const signOut = `<button class="chip" id="jellyfinSignOut">Sign out</button>`;
   const userLine = audiobookUser ? `<span class="muted small">${esc(audiobookUser.Name||'')}</span>` : '';
+  const abDiagnostics = () => {
+    let host = 'not set';
+    try{ host = new URL(audiobookServerUrl).host; }catch(e){ host = audiobookServerUrl || 'not set'; }
+    const conn = audiobookSession ? 'session ok' : (audiobookError ? 'session FAILED' : 'no session');
+    return `<div class="muted small" id="abDiag" style="opacity:.7;margin:2px 0 6px">build ${esc(CASTER_BUILD)} · ${esc(host)} · ${esc(conn)}</div>`;
+  };
   if(audiobookLibraryState==='loading') return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">Loading audiobooks…</div></div>`;
   if(!audiobookClient){
     return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">Sign in to Jellyfin to see your audiobooks.</div><button class="chip primary" id="jellyfinSignIn">Sign in to Jellyfin</button>${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}</div>`;
@@ -1280,9 +1289,9 @@ function audiobookFooter(){
   if(!audiobooksNav.length) return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">No items found in this library.</div>${signOut}</div>`;
   // If nav items have chapterNumber, render as chapters
   if(audiobooksNav[0]?.chapterNumber){
-    return renderAudiobookChapterList(audiobooksNavTitle, audiobooksNavBack.length ? '‹ Audiobooks' : '', audiobooksNav);
+    return abDiagnostics() + renderAudiobookChapterList(audiobooksNavTitle, audiobooksNavBack.length ? '‹ Audiobooks' : '', audiobooksNav);
   }
-  return renderAudiobookFolderList(audiobooksNavTitle, userLine + (audiobooksNavBack.length ? `<button class="chip" id="abBack">‹ Back</button>` : '') + signOut, audiobooksNav);
+  return renderAudiobookFolderList(audiobooksNavTitle, userLine + abDiagnostics() + (audiobooksNavBack.length ? `<button class="chip" id="abBack">‹ Back</button>` : '') + signOut, audiobooksNav);
 }
 function renderAudiobookFolderList(title, headerExtra, items){
   const isRoot = audiobooksNavBack.length === 0;

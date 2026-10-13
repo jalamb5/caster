@@ -482,6 +482,34 @@ test('a hung PlaybackInfo surfaces a visible error without stopping playback', a
   assert.equal(elements.get('ovError').style.display, '');
 });
 
+test('the audiobook screen states its build, server host and session state', () => {
+  const {context} = bootCaster();
+  const html = vm.runInContext(`(()=>{
+    audiobookUser={Id:'u',Name:'Justin'};
+    audiobookClient={};
+    playerMode='audiobook';
+    audiobookServerUrl='https://jellyfin.example.test';
+    audiobookLibraryState='ready'; audiobooksNavBack=[];
+    audiobooksNav=[{id:'f1',name:'Series Folder',type:'Folder'}];
+    audiobooksNavTitle='Audiobooks';
+    audiobookSession=null; audiobookError='';
+    renderAll();
+    return document.querySelector('#view').innerHTML;
+  })()`,context);
+  assert.match(html, /id="abDiag"/, 'the diagnostic line must render on the audiobook screen');
+  assert.match(html, /build \d{4}-\d{2}-\d{2}/, 'the build stamp must be readable off the screen');
+  assert.match(html, /jellyfin\.example\.test/, 'the connected server host must be readable');
+  assert.match(html, /no session/, 'a missing playback session must be visible without a server probe');
+
+  const withSession = vm.runInContext(`(()=>{
+    audiobookSession={playSessionId:'s',mediaSourceId:'m'}; audiobookError='';
+    playerMode='audiobook';
+    renderAll();
+    return document.querySelector('#view').innerHTML;
+  })()`,context);
+  assert.match(withSession, /session ok/, 'a healthy session must read as healthy');
+});
+
 test('chapter rows and the resume button bind to the folder being browsed', () => {
   assert.match(script,/playAudiobook\(audiobooksNavParentId, el\.dataset\.chapter/,
     'a tapped chapter row must start the book whose folder is open, not whatever is playing');
