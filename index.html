@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=6';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=6';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=7';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=7';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -368,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=6');
+    const r = await fetch('feeds.json?v=7');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -629,7 +629,48 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-13b';
+const CASTER_BUILD = '2026-10-13c';
+// Persistent event log. Every "why did it stop reporting" question we have put to his
+// phone over three days is answerable from this buffer instead of a server probe.
+const CASTER_DIAG_KEY = 'caster.diag.v1';
+const CASTER_DIAG_MAX = 150;
+let casterDiag = [];
+try { casterDiag = JSON.parse(localStorage.getItem(CASTER_DIAG_KEY) || '[]'); } catch(e) { casterDiag = []; }
+if(!Array.isArray(casterDiag)) casterDiag = [];
+function diag(message){
+  const stamp = new Date().toISOString().slice(11,19);
+  casterDiag.push(`${stamp} ${message}`);
+  if(casterDiag.length > CASTER_DIAG_MAX) casterDiag = casterDiag.slice(-CASTER_DIAG_MAX);
+  try { localStorage.setItem(CASTER_DIAG_KEY, JSON.stringify(casterDiag)); } catch(e){}
+}
+function diagText(){
+  return `caster ${CASTER_BUILD} · ${new Date().toISOString()} · ${casterDiag.length} events\n` + casterDiag.join('\n');
+}
+function openDiagModal(){
+  openModal('Diagnostics', `
+    <p class="hint">Last ${casterDiag.length} events. While a chapter plays you should see a <code>progress</code> line every ~10s — if those stop while audio keeps playing, the page is being throttled in the background.</p>
+    <pre id="diagBody" style="max-height:45vh;overflow:auto;font-size:11px;white-space:pre-wrap;background:rgba(127,127,127,.12);padding:8px;border-radius:8px">${esc(diagText())}</pre>
+    <div class="row" style="margin-top:8px">
+      <button class="chip primary" id="diagCopy" style="flex:1">Copy</button>
+      <button class="chip" id="diagClear" style="flex:1">Clear</button>
+    </div>
+  `, () => {
+    $('#diagCopy')?.addEventListener('click', async () => {
+      const text = diagText();
+      try { await navigator.clipboard.writeText(text); toast('Diagnostics copied'); }
+      catch(e) {
+        const ta = document.createElement('textarea'); ta.value = text;
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); toast('Diagnostics copied'); } catch(_){ toast('Select the text and copy it'); }
+        ta.remove();
+      }
+    });
+    $('#diagClear')?.addEventListener('click', () => {
+      casterDiag = []; try { localStorage.removeItem(CASTER_DIAG_KEY); } catch(e){}
+      closeModal(); toast('Diagnostics cleared');
+    });
+  });
+}
 const JELLYFIN_DEFAULT_SERVER = '';
 const JELLYFIN_USER_STORAGE_KEY = 'caster.jellyfin.user';
 const JELLYFIN_TOKEN_KEY = 'caster.jellyfin.token';
@@ -642,7 +683,7 @@ try{
 // Attempt to restore a saved Jellyfin session from localStorage
 async function tryResumeJellyfinSession(){
   const stored = localStorage.getItem(JELLYFIN_TOKEN_KEY);
-  if(!stored) return false;
+  if(!stored){ diag('boot: no stored token'); return false; }
   let tokenData;
   try{ tokenData = JSON.parse(stored); }catch(e){ return false; }
   if(!tokenData?.serverUrl || !tokenData?.accessToken || !tokenData?.userId) return false;
@@ -653,6 +694,7 @@ async function tryResumeJellyfinSession(){
     });
     const profile = await client.request(`/Users/${encodeURIComponent(client.userId)}`);
     audiobookClient = client; audiobookUser = profile;
+    diag('boot: stored session restored');
     audiobookServerUrl = tokenData.serverUrl;
     rememberedJellyfinUser = profile.Name || '';
     try { const hp = await client.getHarryPotterBooks(); audiobookBooks = hp.books; audiobookRootId = hp.rootId; }catch(e){}
@@ -662,6 +704,7 @@ async function tryResumeJellyfinSession(){
     renderAll();
     return true;
   }catch(e){
+    diag('boot: stored session rejected, token cleared');
     localStorage.removeItem(JELLYFIN_TOKEN_KEY);
     return false;
   }
@@ -718,6 +761,7 @@ async function connectJellyfin(serverUrl, username, password){
     const client = await JellyfinClient.authenticate({serverUrl:audiobookServerUrl,username,password,deviceId:createDeviceId()});
     const profile = await client.request(`/Users/${encodeURIComponent(client.userId)}`);
     audiobookClient = client; audiobookUser = profile;
+    diag('connect: signed in');
     // Also fetch HP catalogue for backward compat
     try { const hp = await client.getHarryPotterBooks(); audiobookBooks = hp.books; audiobookRootId = hp.rootId; }catch(e){}
     audiobooksNavTitle = 'Audiobooks';
@@ -936,14 +980,56 @@ async function stopAudiobookSession(){
 // A Jellyfin round-trip that never settles used to leave the chapter loaded but silent:
 // no session, no reports, no error anywhere on screen. Give up loudly instead.
 const SESSION_TIMEOUT_MS = 8000;
-function withSessionTimeout(promise){
+const SESSION_ATTEMPTS = 6;
+let audiobookSessionAttempts = 0;
+function withSessionTimeout(promise, ms = SESSION_TIMEOUT_MS){
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(
       'Jellyfin did not respond — this chapter will play, but its position won\'t be saved'
-    )), SESSION_TIMEOUT_MS);
+    )), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+// Establish the playback session, retrying instead of giving up once. Called from the
+// chapter start AND from the media-clock tick, so a session that fails at tap time is
+// retried while the chapter plays. Pressing the play button on an already-loaded file
+// now establishes one too — it previously never did, which is one reading of "no session".
+async function ensureAudiobookSession(chapter, generation, positionSeconds){
+  if(!audiobookClient || !chapter) return false;
+  if(audiobookSession) return true;
+  if(generation !== audiobookPlaybackGeneration) return false;
+  if(audiobookSessionAttempts >= SESSION_ATTEMPTS){
+    if(audiobookSessionState.indexOf('gave up') !== 0){
+      audiobookSessionState = `gave up after ${SESSION_ATTEMPTS} attempts`;
+      diag(audiobookSessionState); renderAll();
+    }
+    return false;
+  }
+  audiobookSessionAttempts++;
+  audiobookSessionState = `starting (${audiobookSessionAttempts}/${SESSION_ATTEMPTS})`;
+  diag(`session attempt ${audiobookSessionAttempts}/${SESSION_ATTEMPTS}`);
+  try{
+    const info = await withSessionTimeout(audiobookClient.getPlaybackInfo(chapter), SESSION_TIMEOUT_MS);
+    if(generation !== audiobookPlaybackGeneration){ diag('session superseded'); return false; }
+    const source = info.MediaSources?.find(x=>x.Id===chapter.mediaSourceId) || info.MediaSources?.[0];
+    if(!info.PlaySessionId || !source?.Id) throw new Error('PlaybackInfo did not return a session and media source');
+    audiobookSession = {playSessionId:info.PlaySessionId, mediaSourceId:source.Id};
+    audiobookSessionState = 'ok';
+    diag('session ok');
+    scheduleAudiobookProgress();
+    await queueAudiobookReport('started', positionSeconds, false);
+    renderAll();
+    return true;
+  }catch(error){
+    if(generation === audiobookPlaybackGeneration){
+      audiobookSessionState = 'failed: ' + (error?.message || 'unknown');
+      audiobookError = error?.message || 'Could not start Jellyfin playback session';
+      diag('session failed: ' + (error?.message || 'unknown'));
+      renderAll();
+    }
+    return false;
+  }
 }
 async function startAudiobookSession(book,chapter,{positionTicks=chapter.positionTicks||0,autoplay=true}={}){
   if(!audiobookClient) throw new Error('Sign in to Jellyfin first');
@@ -989,26 +1075,17 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
         if(generation===audiobookPlaybackGeneration && error?.name!=='AbortError') toast('Playback blocked — tap play');
       })
     : Promise.resolve();
-  try{
-    const info=await withSessionTimeout(audiobookClient.getPlaybackInfo(chapter));
-    if(generation!==audiobookPlaybackGeneration){ audiobookSessionState='superseded'; return; }
-    const source=info.MediaSources?.find(x=>x.Id===chapter.mediaSourceId) || info.MediaSources?.[0];
-    if(!info.PlaySessionId || !source?.Id) throw new Error('PlaybackInfo did not return a session and media source');
-    audiobookSession={playSessionId:info.PlaySessionId,mediaSourceId:source.Id};
-    audiobookSessionState='ok';
-    // The 'play' event fired before the session existed, so the report loop starts here.
-    scheduleAudiobookProgress();
-    await queueAudiobookReport('started',ticksToSeconds(startTicks)||0,false);
-  }catch(error){
-    if(generation===audiobookPlaybackGeneration){audiobookSessionState='failed: '+(error?.message || 'unknown');audiobookError=error?.message || 'Could not start Jellyfin playback session';renderAll();}
-  }
+  audiobookSessionAttempts = 0;
+  diag(`chapter start: ${chapter.title || chapter.id}`);
+  await ensureAudiobookSession(chapter, generation, ticksToSeconds(startTicks)||0);
   await playAttempt;
   updateMediaSession();renderAll();
 }
 function playAudiobook(bookId,chapterId,{positionTicks,autoplay=true}={}){
-  if(!bookId) return; // a chapter row whose owning folder is unknown must not start playback
+  if(!bookId){ diag('tap dropped: unknown book'); return; } // a chapter row whose owning folder is unknown must not start playback
   const chapter = chapterById(bookId, chapterId);
-  if(!chapter) return;
+  if(!chapter){ diag(`tap dropped: unknown chapter ${chapterId}`); return; }
+  diag(`tap ${chapterId}`);
   startAudiobookSession({ id: bookId }, chapter, {positionTicks,autoplay});
 }
 function resumeAudiobook(bookId){
@@ -1025,6 +1102,7 @@ function nextAudiobookChapter(){
   const chapters = getCurrentChapters();
   if(!chapters.length) return;
   const next = nextChapter(chapters, chapter.id);
+  diag(next ? 'chapter ended — advancing' : 'chapter ended — end of book');
   if(!next){
     cancelAudiobookReportTimer();
     const position=audio.currentTime;
@@ -1282,7 +1360,7 @@ function audiobookFooter(){
     try{ host = new URL(audiobookServerUrl).host; }catch(e){ host = audiobookServerUrl || 'not set'; }
     const raw = audiobookSessionState;
     const conn = (raw === 'ok' ? 'session ok' : (raw || 'idle')).slice(0,70);
-    return `<div class="muted small" id="abDiag" style="opacity:.7;margin:2px 0 6px">build ${esc(CASTER_BUILD)} · ${esc(host)} · ${esc(conn)}</div>`;
+    return `<div class="muted small" id="abDiag" style="opacity:.7;margin:2px 0 6px">build ${esc(CASTER_BUILD)} · ${esc(host)} · ${esc(conn)} <button class="chip" id="abDiagBtn" style="padding:0 6px;margin-left:4px">📋 log</button></div>`;
   };
   if(audiobookLibraryState==='loading') return `${modeRow}<div class="empty"><div class="big">📚</div><div class="muted">Loading audiobooks…</div></div>`;
   if(!audiobookClient){
@@ -1336,6 +1414,7 @@ function renderAudiobookView(v){
   $('#jellyfinSignIn')?.addEventListener('click',openJellyfinSignIn);
   $('#jellyfinSignOut')?.addEventListener('click',()=>{clearJellyfinLogin();audiobookLibraryState='idle';renderAll()});
   $('#abRetry')?.addEventListener('click',()=>navigateAudiobooksToRoot());
+  $('#abDiagBtn')?.addEventListener('click',openDiagModal);
   $('#abBack')?.addEventListener('click',navigateAudiobookBack);
   $('#abQuickResume')?.addEventListener('click',resumeAudiobookQuick);
   $('#abResume')?.addEventListener('click',()=>{
@@ -1593,9 +1672,18 @@ audio.addEventListener('ended', next);
 audio.addEventListener('timeupdate', () => {
   if(playerMode === 'audiobook'){
     if(now() - lastProgress > 700){renderOverlay();lastProgress=now();}
-    if(now() - lastPosSave > 10000 && audiobookSession && !audio.paused){
+    if(now() - lastPosSave > 10000 && !audio.paused){
       lastPosSave=now();
-      queueAudiobookReport('progress',audio.currentTime,false).then(()=>{if(!audio.paused)scheduleAudiobookProgress()});
+      const chapter=currentAudiobookChapter();
+      if(audiobookSession){
+        // Driven by the media clock, not a timer: a backgrounded mobile page throttles
+        // timers but keeps firing timeupdate while audio plays.
+        diag(`progress ${Math.round(audio.currentTime)}s`);
+        queueAudiobookReport('progress',audio.currentTime,false).then(()=>{if(!audio.paused)scheduleAudiobookProgress()});
+      }else if(chapter){
+        diag('playing with no session — retrying');
+        ensureAudiobookSession(chapter, audiobookPlaybackGeneration, audio.currentTime);
+      }
     }
     return;
   }
@@ -1603,7 +1691,7 @@ audio.addEventListener('timeupdate', () => {
   if(now() - lastProgress > 500){ renderOverlay(); lastProgress = now(); }
   if(now() - lastPosSave > 4000){ lastPosSave = now(); const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); } }
 });
-audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') scheduleAudiobookProgress(); try{ appendEvent('play'); }catch(e){} });
+audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook'){ scheduleAudiobookProgress(); const ch=currentAudiobookChapter(); if(!audiobookSession && ch){ diag('play without a session — establishing'); ensureAudiobookSession(ch, audiobookPlaybackGeneration, audio.currentTime); } } try{ appendEvent('play'); }catch(e){} });
 audio.addEventListener('pause', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') cancelAudiobookReportTimer(); });
 audio.addEventListener('loadedmetadata', () => { applyAudiobookResumePosition(); updateMediaSession(); renderOverlay(); });
 window.addEventListener('pagehide', () => {
@@ -1697,6 +1785,7 @@ window.caster = {
 renderAll();
 loadBundledShows().then(renderAll);
 // Try to restore a saved Jellyfin session without requiring a fresh sign-in
+diag(`boot ${CASTER_BUILD}`);
 tryResumeJellyfinSession();
 </script>
 </body>

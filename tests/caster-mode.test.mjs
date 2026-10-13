@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { script, source as executable, bootCaster, flushChains } from './harness.mjs';
+import { script, source as executable, html, bootCaster, flushChains } from './harness.mjs';
+import { genericNormalizeChapters } from '../jellyfin.mjs';
 
 const manifest = JSON.parse(await readFile(new URL('../manifest.webmanifest', import.meta.url), 'utf8'));
 assert.match(manifest.name,/podcasts and audiobooks/);
@@ -528,4 +529,133 @@ test('chapter rows and the resume button bind to the folder being browsed', () =
     'the resume button must start the book whose folder is open');
   assert.doesNotMatch(script,/playAudiobook\(audiobookActiveBookId, el\.dataset\.chapter/,
     'row clicks must not resolve the book through playback state');
+});
+
+// Fixtures for the session/diagnostics tests. The harness's element stub swallows
+// addEventListener, so events cannot be fired: these drive the session function directly
+// and assert the event wiring in source, which is the honest split.
+const ticksFromDuration = (duration) => {
+  const [h, m, sec] = duration.split(':').map(Number);
+  return ((h * 3600) + (m * 60) + sec) * 1e7;
+};
+const audioItem = (index, duration = '00:10:00') => ({
+  Id: `b1-ch${index}`, Name: `Chapter ${index}`, Type: 'AudioBook',
+  RunTimeTicks: ticksFromDuration(duration),
+});
+const makeChapterContext = (context, chapters) => {
+  context.__chapters = chapters; // the vm cannot see test-module scope, so hand it over
+  vm.runInContext('var chapterList = __chapters;', context, {timeout:5000});
+  vm.runInContext([
+    "audiobooksNav = chapterList.slice();",
+    "audiobooksNavTitle = 'a book'; audiobooksNavParentId = 'b1';",
+    "audiobookBooks = [{id:'b1', title:'a book', chapters:chapterList}];",
+    "audiobookActiveBookId = 'b1'; audiobookActiveBookTitle = 'a book';",
+    "adoptAudiobookChapter('b1', chapterList[0]);",
+  ].join(';'), context, {timeout:5000});
+  return context;
+};
+const makeJellyfinClient = (chapters) => ({
+  getPlaybackInfo: async () => ({
+    PlaySessionId: 'play-1',
+    MediaSources: [{ Id: chapters[0].mediaSourceId, Path: 'x.mp3', RunTimeTicks: chapters[0].runTimeTicks }],
+  }),
+  reportStarted: async () => {}, reportProgress: async () => {}, reportStopped: async () => {},
+});
+const chaptersOf = (name) => genericNormalizeChapters([audioItem(1), audioItem(2)], 'b1', name).chapters;
+
+test('a session that fails once is retried and then reports, instead of staying dead', async () => {
+  const {context} = bootCaster();
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", context);
+  const chapters = chaptersOf('a book');
+  const client = makeJellyfinClient(chapters);
+  const reports = [];                       // the mock records what the app sends
+  client.reportStarted = async (_c,_s,p) => reports.push({kind:'started',p});
+  client.reportProgress = async (_c,_s,p) => reports.push({kind:'progress',p});
+  client.reportStopped = async (_c,_s,p) => reports.push({kind:'stopped',p});
+  let calls = 0;
+  const real = client.getPlaybackInfo.bind(client);
+  client.getPlaybackInfo = async (chapter) => {
+    calls += 1;
+    if(calls === 1) throw new Error('server said no');
+    return real(chapter);
+  };
+  context.__client = client;
+  makeChapterContext(context, chapters);
+  vm.runInContext('audiobookClient=__client;', context, {timeout:5000});
+
+  const first = await vm.runInContext(
+    "ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)", context, {timeout:5000});
+  assert.equal(first, false, 'the first attempt fails');
+  assert.equal(calls, 1);
+  assert.match(vm.runInContext('audiobookSessionState', context), /failed: server said no/);
+
+  const second = await vm.runInContext(
+    "ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)", context, {timeout:5000});
+  await flushChains(context);
+  assert.equal(second, true, 'the retry establishes a session');
+  assert.equal(vm.runInContext('audiobookSession ? 1 : 0', context), 1);
+  assert.equal(reports.filter(r => r.kind === 'started').length, 1,
+    'once a session exists the started report goes out, so a late session still records history');
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /session attempt 2\/6/);
+});
+
+test('the retry is wired to the media clock and to the play button', () => {
+  assert.match(executable, /now\(\) - lastPosSave > 10000 && !audio\.paused/,
+    'progress must be gated on the media clock, not a timer chain');
+  assert.match(executable, /ensureAudiobookSession\(chapter, audiobookPlaybackGeneration, audio\.currentTime\)/,
+    'a chapter playing with no session must retry itself');
+  assert.match(executable, /if\(!audiobookSession && ch\)\{ diag\('play without a session/,
+    'pressing play on a loaded file must establish the session it never had');
+});
+
+test('the session retry gives up loudly rather than retrying forever', async () => {
+  const {context} = bootCaster();
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", context);
+  const chapters = chaptersOf('a book');
+  const client = makeJellyfinClient(chapters);
+  const reports = [];
+  client.reportStarted = async () => reports.push('started');
+  client.reportProgress = async () => reports.push('progress');
+  client.reportStopped = async () => reports.push('stopped');
+  client.getPlaybackInfo = async () => { throw new Error('always down'); };
+  context.__client = client;
+  makeChapterContext(context, chapters);
+  vm.runInContext('audiobookClient=__client;', context, {timeout:5000});
+
+  for(let i = 1; i <= 8; i++){
+    const ok = await vm.runInContext(
+      "ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)", context, {timeout:5000});
+    await flushChains(context);
+    if(i <= 6) assert.equal(ok, false, `attempt ${i} must fail`);
+  }
+  assert.match(vm.runInContext('audiobookSessionState', context), /gave up after 6 attempts/,
+    'the readout must say how many attempts were made');
+  assert.equal(reports.length, 0, 'no session, so nothing was reported');
+});
+
+test('the diagnostic log records the session lifecycle and is persisted and bounded', async () => {
+  const {context, store} = bootCaster();
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", context);
+  const chapters = chaptersOf('a book');
+  context.__client = makeJellyfinClient(chapters);
+  makeChapterContext(context, chapters);
+  vm.runInContext('audiobookClient=__client;', context, {timeout:5000});
+  await vm.runInContext(
+    "ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)", context, {timeout:5000});
+  await flushChains(context);
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(log, /session attempt 1\/6/);
+  assert.match(log, /session ok/);
+
+  const stored = store.get('caster.diag.v1');
+  assert.ok(stored, 'the log must survive a reload');
+  const parsed = JSON.parse(stored);
+  assert.ok(Array.isArray(parsed) && parsed.length <= 150, 'the log must stay bounded');
+});
+
+test('the diagnostics are reachable from the audiobook screen and copyable', () => {
+  assert.match(html, /id="abDiagBtn"/, 'the audiobook screen must offer the log');
+  assert.match(html, /id="diagCopy"/, 'the log must be copyable without typing anything by hand');
+  assert.match(executable, /function openDiagModal/);
 });
