@@ -689,3 +689,29 @@ test('the render path only touches elements that exist in the static markup', as
   vm.runInContext("audio.paused=false; playerMode='audiobook'; renderAll();", context, {timeout:5000});
   assert.equal(vm.runInContext('audiobookSessionState', context), 'ok');
 });
+
+test('setting text on a player element must not destroy a queryable child', () => {
+  // The real crash behind every "position not saved" night: #pbarCached was nested inside
+  // #pbarShow, and renderPlayerBar sets #pbarShow.textContent — which REPLACES all child
+  // nodes. The first render destroyed the span; the very next line queried it and threw.
+  // The vm harness cannot reproduce child destruction (fake elements just hold a string),
+  // so this asserts the structure instead.
+  const staticHtml = html.split('<script type="module">')[0];
+  const targets = Array.from(executable.matchAll(/\$\('#([A-Za-z0-9_]+)'\)\.textContent\s*=/g), m => m[1]);
+  assert.ok(targets.includes('pbarShow') && targets.includes('ovShow'),
+    'the test must cover the elements the player actually writes to');
+  for (const id of targets) {
+    const at = staticHtml.indexOf(`id="${id}"`);
+    if (at < 0) continue;                       // built at runtime, not static markup
+    const own = staticHtml.indexOf('>', at);
+    // bounded by the element's OWN closing tag — otherwise a self-contained span reads
+    // as if it contains its following sibling
+    const tag = /<([a-z0-9]+)[^>]*$/.exec(staticHtml.slice(0, at))?.[1] || 'div';
+    const closer = staticHtml.indexOf(`</${tag}>`, own);
+    const closers = [closer].filter(i => i >= 0);
+    const end = closers.length ? Math.min(...closers) : staticHtml.length;
+    const inner = /id="([^"]+)"/.exec(staticHtml.slice(own + 1, end));
+    assert.equal(inner, null,
+      `#${id} contains #${inner?.[1]} — writing textContent would destroy it and the next query would throw`);
+  }
+});

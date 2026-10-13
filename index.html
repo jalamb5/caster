@@ -189,7 +189,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
     <img id="pbarArt" alt="">
     <div class="meta">
       <div class="t" id="pbarTitle"></div>
-      <div class="s" id="pbarShow"><span id="pbarCached" style="display:none;color:var(--ok);font-size:11px;margin-right:4px">✓ cached</span></div>
+      <div class="s"><span id="pbarShow"></span><span id="pbarCached" style="display:none;color:var(--ok);font-size:11px;margin-right:4px">✓ cached</span></div>
     </div>
     <div class="ctr">
       <button id="pbarPrev" title="Previous chapter" style="display:none">⏮</button>
@@ -629,7 +629,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-13d';
+const CASTER_BUILD = '2026-10-13e';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
