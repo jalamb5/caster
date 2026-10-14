@@ -6,6 +6,12 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:  # allow manual trigger from GitHub UI
 
+# The job commits the refreshed feeds.json back to main. The repository's
+# default workflow permission is read-only, so the push below is denied
+# unless this job asks for write access explicitly.
+permissions:
+  contents: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
