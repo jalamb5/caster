@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=7';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=7';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=8';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=8';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -368,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=7');
+    const r = await fetch('feeds.json?v=8');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -629,16 +629,20 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-13e';
+const CASTER_BUILD = '2026-10-16a';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
-const CASTER_DIAG_MAX = 150;
+// 600, not 150: the per-chapter media lines below plus an overnight listen pushed the
+// visible window down to ~30 minutes, and the failure lands at the END of a long night.
+const CASTER_DIAG_MAX = 600;
 let casterDiag = [];
+let lastDiagAt = 0;
 try { casterDiag = JSON.parse(localStorage.getItem(CASTER_DIAG_KEY) || '[]'); } catch(e) { casterDiag = []; }
 if(!Array.isArray(casterDiag)) casterDiag = [];
 function diag(message){
   const stamp = new Date().toISOString().slice(11,19);
+  lastDiagAt = Date.now();
   casterDiag.push(`${stamp} ${message}`);
   if(casterDiag.length > CASTER_DIAG_MAX) casterDiag = casterDiag.slice(-CASTER_DIAG_MAX);
   try { localStorage.setItem(CASTER_DIAG_KEY, JSON.stringify(casterDiag)); } catch(e){}
@@ -736,7 +740,11 @@ function applyAudiobookResumePosition(){
   const pending=audiobookPendingResume;
   if(playerMode!=='audiobook' || !pending || pending.generation!==audiobookPlaybackGeneration || pending.chapterId!==audiobookActiveChapterId) return;
   if(!Number.isFinite(audio.duration) || audio.duration<=0) return;
-  audio.currentTime=Math.min(pending.seconds,Math.max(0,audio.duration-0.5));
+  const target=Math.min(pending.seconds,Math.max(0,audio.duration-0.5));
+  // This seek is silent in the UI and can fire from ANY render, long after the chapter
+  // start that armed it: every one it performs gets a line.
+  diag(`resume-seek ${Math.round(audio.currentTime||0)}->${Math.round(target)} ${mediaState()}`);
+  audio.currentTime=target;
   audiobookPendingResume=null;
 }
 function clearJellyfinLogin(){
@@ -1067,12 +1075,15 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
   audio.playbackRate=speed;
   audio.currentTime=ticksToSeconds(startTicks) || 0;
   audiobookPendingResume={chapterId:chapter.id,seconds:ticksToSeconds(startTicks)||0,generation};
+  diag(`resume-pending set -> ${Math.round(ticksToSeconds(startTicks)||0)}s`);
   chapter.positionTicks=startTicks;
   renderAll();
   // Play FIRST: advancing to the next chapter must not wait on — or be lost behind —
   // two Jellyfin round-trips. The session is set up alongside, not ahead of, playback.
   const playAttempt = autoplay
-    ? audio.play().catch(error=>{
+    ? audio.play().then(()=>{ diag(`play resolved ${mediaState()}`); }).catch(error=>{
+        // A blocked autoplay used to toast and nothing else — invisible to the log.
+        diag(`play rejected: ${error?.name||''} ${error?.message||''} ${mediaState()}`);
         if(generation===audiobookPlaybackGeneration && error?.name!=='AbortError') toast('Playback blocked — tap play');
       })
     : Promise.resolve();
@@ -1097,7 +1108,7 @@ function resumeAudiobook(bookId){
   playAudiobook(bookId, resume.chapter.id, {positionTicks: resume.positionTicks, autoplay: true});
 }
 function nextAudiobookChapter(){
-  if(sleepTimer && sleepTimer.mode==='end'){try{appendEvent('timer');}catch(e){}pause('sleep');clearSleepTimer();return;}
+  if(sleepTimer && sleepTimer.mode==='end'){try{appendEvent('timer');}catch(e){}diag('sleep timer set to chapter end — paused instead of advancing');pause('sleep');clearSleepTimer();return;}
   const chapter = currentAudiobookChapter();
   if(!chapter) return;
   const chapters = getCurrentChapters();
@@ -1190,6 +1201,7 @@ function shuffleAll(){
 }
 
 function pause(reason){
+  diag(`pause requested: ${reason || 'user'}`);
   if(playerMode==='audiobook'){
     const position=audio.currentTime;
     cancelAudiobookReportTimer();
@@ -1202,7 +1214,7 @@ function pause(reason){
 
 function togglePlay(){
   if(audio.paused){
-    audio.play().then(()=>{if(playerMode==='audiobook' && audiobookSession){queueAudiobookReport('progress',audio.currentTime,false);scheduleAudiobookProgress();}}).catch(()=>{});
+    audio.play().then(()=>{if(playerMode==='audiobook' && audiobookSession){queueAudiobookReport('progress',audio.currentTime,false);scheduleAudiobookProgress();}}).catch(error=>diag(`play rejected (toggle): ${error?.name||''} ${error?.message||''}`));
     if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
   }
   else pause();
@@ -1225,16 +1237,24 @@ function updateMediaSession(){
   const art = !audiobook && show.artwork ? [{ src: show.artwork, sizes: '512x512', type: 'image/jpeg' }] : [];
   ms.metadata = new MediaMetadata({ title: ep.title || 'Episode', artist: audiobook ? show.title : (show.title || 'Podcast'), album: audiobook ? 'Caster Audiobooks' : 'Caster', artwork: art });
   ms.playbackState = audio.paused ? 'paused' : 'playing';
-  ms.setActionHandler('play', () => togglePlay());
-  ms.setActionHandler('pause', () => pause());
-  ms.setActionHandler('previoustrack', () => {
+  // Lock-screen, notification and headset controls call these. Until now they moved the
+  // position with no trace anywhere — a backwards jump with no line to explain it.
+  const onAction = (name, fn) => ms.setActionHandler(name, d => {
+    const from = Math.round(audio.currentTime||0);
+    diag(`mediasession ${name} ${JSON.stringify(d || {})}`);
+    try { fn(d); } catch(error){ diag(`mediasession ${name} failed: ${error?.message||error}`); }
+    if(Math.round(audio.currentTime||0) !== from) diag(`mediasession ${name} moved ${from}->${Math.round(audio.currentTime||0)}`);
+  });
+  onAction('play', () => togglePlay());
+  onAction('pause', () => pause());
+  onAction('previoustrack', () => {
     if(playerMode === 'audiobook'){ previousAudiobookChapter(); return; }
     const episode = current(); if(episode && audio.currentTime > 5) audio.currentTime = 0; else if(episode) playEpisode(currentShow(), episode, {reset:true});
   });
-  ms.setActionHandler('nexttrack', () => playerMode === 'audiobook' ? nextAudiobookChapter() : skipCurrent());
-  ms.setActionHandler('seekbackward', d => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 15)); });
-  ms.setActionHandler('seekforward', d => { audio.currentTime = Math.min(audio.duration||1e9, audio.currentTime + (d.seekOffset || 30)); });
-  ms.setActionHandler('seekto', d => { if(d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime); else audio.currentTime = d.seekTime; });
+  onAction('nexttrack', () => playerMode === 'audiobook' ? nextAudiobookChapter() : skipCurrent());
+  onAction('seekbackward', d => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 15)); });
+  onAction('seekforward', d => { audio.currentTime = Math.min(audio.duration||1e9, audio.currentTime + (d.seekOffset || 30)); });
+  onAction('seekto', d => { if(d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime); else audio.currentTime = d.seekTime; });
   const push = () => { try{ ms.setPositionState({ duration: audio.duration || 0, position: audio.currentTime || 0, playbackRate: audio.playbackRate }); }catch(e){} };
   push(); setTimeout(push, 500);
 }
@@ -1669,6 +1689,22 @@ function openSleepSheet(){
 }
 
 /* ---------- events ---------- */
+// Every media-element transition, logged. The 2026-10-16 log could not say whether a
+// four-minute silent window was a stalled element, a frozen page or a pause, because
+// nothing recorded the element's own state — its absence was the only evidence.
+// Position, buffering and visibility are that evidence; the heartbeat at the foot of
+// this file is what makes a FROZEN page (which cannot log at all) visible as a gap.
+let mediaLastPos = 0;
+let mediaSeekFrom = null;
+function mediaState(){
+  return `pos=${Math.round(audio.currentTime||0)} dur=${Number.isFinite(audio.duration)?Math.round(audio.duration):'-'} paused=${audio.paused} rs=${audio.readyState} ns=${audio.networkState} vis=${document.visibilityState}`;
+}
+['play','playing','pause','ended','waiting','stalled','suspend','abort','emptied','error','loadedmetadata','loadeddata','durationchange','ratechange'].forEach(ev => audio.addEventListener(ev, () => {
+  diag(`media ${ev} ${mediaState()}`);
+}));
+audio.addEventListener('timeupdate', () => { mediaLastPos = audio.currentTime; });
+audio.addEventListener('seeking', () => { mediaSeekFrom = mediaLastPos; diag(`media seeking ${Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); });
+audio.addEventListener('seeked', () => { diag(`media seeked ${mediaSeekFrom===null?'?':Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); mediaLastPos = audio.currentTime; mediaSeekFrom = null; });
 audio.addEventListener('ended', next);
 audio.addEventListener('timeupdate', () => {
   if(playerMode === 'audiobook'){
@@ -1696,6 +1732,7 @@ audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.medi
 audio.addEventListener('pause', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') cancelAudiobookReportTimer(); });
 audio.addEventListener('loadedmetadata', () => { applyAudiobookResumePosition(); updateMediaSession(); renderOverlay(); });
 window.addEventListener('pagehide', () => {
+  diag(`pagehide ${mediaState()}`);
   if(playerMode==='audiobook'){
     const chapter=currentAudiobookChapter();
     if(chapter && Number.isFinite(audio.currentTime)) queueAudiobookReport('stopped',audio.currentTime,true)
@@ -1706,14 +1743,16 @@ window.addEventListener('pagehide', () => {
 
 // Resume playback after mobile browser tab suspension (screen lock / backgrounding)
 window.addEventListener('visibilitychange', () => {
+  diag(`visibility ${document.visibilityState} ${mediaState()}`);
   if(document.visibilityState !== 'visible') return;
   if(playerMode !== 'audiobook' || !audiobookSession) return;
   // Audio may have been paused by the browser during background; resume if it was actively playing
   if(audio.paused && audio.currentTime > 0 && !audio.ended){
-    audio.play().catch(() => {});  // may fail without user gesture on some mobile browsers
+    audio.play().then(()=>diag('resume-after-visible: play resolved')).catch(error=>diag(`resume-after-visible play rejected: ${error?.name||''} ${error?.message||''}`));  // may fail without user gesture on some mobile browsers
   }
 });
 window.addEventListener('pageshow', (e) => {
+  diag(`pageshow persisted=${e.persisted} ${mediaState()}`);
   if(!e.persisted || playerMode !== 'audiobook') return;
   // Restored from bfcache — audio state is gone, refresh from server position
   if(!audiobookActiveBookId || !audiobookActiveChapterId) return;
@@ -1725,6 +1764,10 @@ window.addEventListener('pageshow', (e) => {
 
 
 setInterval(() => { if(sleepTimer) renderSleepChip(); }, 30000);
+// The heartbeat. A page the OS has frozen cannot log anything, so the beat's ABSENCE is
+// the signal — and it only speaks when nothing else has for 25s, so a chapter playing
+// normally adds no lines at all.
+setInterval(() => { if(Date.now() - lastDiagAt > 25000) diag(`hb ${mediaState()}`); }, 30000);
 
 $('#addBtn').addEventListener('click', openAddModal);
 $('#setBtn').addEventListener('click', openSettingsModal);

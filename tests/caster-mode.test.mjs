@@ -651,7 +651,71 @@ test('the diagnostic log records the session lifecycle and is persisted and boun
   const stored = store.get('caster.diag.v1');
   assert.ok(stored, 'the log must survive a reload');
   const parsed = JSON.parse(stored);
-  assert.ok(Array.isArray(parsed) && parsed.length <= 150, 'the log must stay bounded');
+  // The bound is the constant's, not a magic 150: the buffer was raised to cover a
+  // whole night's listening (a swallowed window is the failure we are hunting).
+  const max = Number((script.match(/CASTER_DIAG_MAX = (\d+)/) || [])[1]);
+  assert.ok(max >= 150 && max <= 5000, `the log bound must be sane, got ${max}`);
+  assert.ok(Array.isArray(parsed) && parsed.length <= max, 'the log must stay bounded');
+});
+
+/* ---- The 2026-10-16 night: a four-minute silent window could have been a stalled
+   element, a frozen page or a pause, and the log could not say which, because nothing
+   recorded the element's own state. These pin the signals that tell them apart. ---- */
+
+test('the media element logs its own transitions, including where a seek came from', () => {
+  const {context, elements} = bootCaster();
+  const audio = elements.get('audio');
+  const types = ['play','playing','pause','ended','waiting','stalled','suspend','abort','emptied',
+    'error','loadedmetadata','loadeddata','durationchange','ratechange'];
+  vm.runInContext('casterDiag.length = 0', context);
+  types.forEach(type => audio.dispatchEvent({type}));
+  vm.runInContext('mediaLastPos = 300; audio.currentTime = 620', context);
+  audio.dispatchEvent({type:'seeking'});
+  audio.dispatchEvent({type:'seeked'});
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  types.forEach(type => assert.match(log, new RegExp(`media ${type} pos=`),
+    `a ${type} on the element must be logged`));
+  assert.match(log, /media seeking 300->620/,
+    'a position jump must record where it came FROM — a backwards 340s jump was unexplainable');
+  assert.match(log, /media seeked 300->620/);
+});
+
+test('a pause names its reason and a blocked play is recorded, not swallowed', async () => {
+  const {context, elements} = bootCaster();
+  const audio = elements.get('audio');
+  vm.runInContext('casterDiag.length = 0; playerMode="audiobook"', context);
+  vm.runInContext("pause('sleep')", context);
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /pause requested: sleep/,
+    'the sleep timer firing and a tap-pause must not look identical in the log');
+
+  audio.play = () => Promise.reject(new Error('not allowed'));
+  vm.runInContext('togglePlay()', context);
+  await new Promise(r => setImmediate(r));
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /play rejected \(toggle\): Error not allowed/,
+    'a rejected play() used to vanish into an empty catch — the exact "chapter loaded, silence" report');
+});
+
+test('pagehide and visibility are recorded, with the position they happened at', () => {
+  const {context, fireWindow} = bootCaster();
+  vm.runInContext('casterDiag.length = 0', context);
+  fireWindow('visibilitychange');
+  fireWindow('pagehide');
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(log, /visibility /, 'a screen-off/on transition is the one event we could never see');
+  assert.match(log, /pagehide pos=/, 'the position the page was hidden at is the baseline for the gap');
+});
+
+test('the heartbeat only speaks when nothing else has — the gap IS the signal', () => {
+  const {context, fireInterval} = bootCaster();
+  vm.runInContext('casterDiag.length = 0', context);
+  fireInterval(30000);
+  assert.equal(vm.runInContext("casterDiag.filter(l => l.indexOf(' hb ') >= 0).length", context), 0,
+    'a live app must not pad its own log');
+  vm.runInContext('lastDiagAt = Date.now() - 30000', context);
+  fireInterval(30000);
+  assert.ok(vm.runInContext("casterDiag.filter(l => l.indexOf(' hb ') >= 0).length", context) >= 1,
+    'a log that has gone quiet must beat, so a frozen page reads as a gap rather than as nothing');
 });
 
 test('the diagnostics are reachable from the audiobook screen and copyable', () => {
