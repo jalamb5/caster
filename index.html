@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=8';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=8';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=9';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=9';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -368,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=8');
+    const r = await fetch('feeds.json?v=9');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -629,7 +629,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-16a';
+const CASTER_BUILD = '2026-10-17a';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
@@ -1202,6 +1202,7 @@ function shuffleAll(){
 
 function pause(reason){
   diag(`pause requested: ${reason || 'user'}`);
+  lastStopReason = reason || 'user';
   if(playerMode==='audiobook'){
     const position=audio.currentTime;
     cancelAudiobookReportTimer();
@@ -1688,6 +1689,54 @@ function openSleepSheet(){
   });
 }
 
+/* ---------- surviving a dead stream ---------- */
+// The 2026-10-17 log named it: `media error` 14m52s into THE CHAMBER OF SECRETS, playback
+// stopped dead, and nothing in the app reacted. It came back only because he touched the
+// phone 12s later (visibility → play). Asleep, that is the rest of the night gone — which
+// is what "it stopped instead of moving on" looks like from his side.
+const MEDIA_RECOVERY_ATTEMPTS = 3;
+const MEDIA_RECOVERY_DELAYS = [2000, 5000, 12000];
+let mediaRecoveryAttempts = 0;
+let mediaRecoveryTimer = null;
+let lastTimeupdateAt = 0;
+let lastStopReason = '';        // set only by OUR pauses, never by the browser's own
+function audiobookMediaFailed(why){
+  if(playerMode !== 'audiobook' || !audio.src || audio.ended) return false;
+  const chapter = currentAudiobookChapter();
+  if(!chapter) return false;
+  if(lastStopReason) return false;                        // he paused; not ours to undo
+  if(mediaRecoveryTimer) return false;                    // one attempt already in flight
+  if(mediaRecoveryAttempts >= MEDIA_RECOVERY_ATTEMPTS){
+    if(audiobookError.indexOf('could not be restarted') < 0){
+      audiobookError = 'Playback stopped and could not be restarted — tap play';
+      diag(`media recovery gave up after ${MEDIA_RECOVERY_ATTEMPTS} attempts`);
+      renderAll();
+    }
+    return false;
+  }
+  const position = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+  const delay = MEDIA_RECOVERY_DELAYS[mediaRecoveryAttempts] || MEDIA_RECOVERY_DELAYS[MEDIA_RECOVERY_DELAYS.length - 1];
+  mediaRecoveryAttempts += 1;
+  diag(`media recovery ${mediaRecoveryAttempts}/${MEDIA_RECOVERY_ATTEMPTS} (${why}) in ${delay}ms from ${Math.round(position)}s`);
+  mediaRecoveryTimer = setTimeout(() => {
+    mediaRecoveryTimer = null;
+    const still = currentAudiobookChapter();
+    if(playerMode !== 'audiobook' || !still || still.id !== chapter.id || lastStopReason) return;
+    // Reload and let the EXISTING resume path do the seek: load() resets currentTime to 0
+    // and a seek before metadata arrives is dropped, so it has to land on loadedmetadata.
+    audiobookPendingResume = { chapterId: chapter.id, seconds: position, generation: audiobookPlaybackGeneration };
+    try { audio.load(); } catch(error){ diag(`media recovery load failed: ${error?.message||error}`); }
+    audio.playbackRate = speed;
+    audio.play().then(() => {
+      audiobookError = '';
+      diag(`media recovery ${mediaRecoveryAttempts} playing from ${Math.round(audio.currentTime||0)}s`);
+      if(!audiobookSession) ensureAudiobookSession(chapter, audiobookPlaybackGeneration, position);
+      renderAll();
+    }).catch(error => diag(`media recovery play rejected: ${error?.name||''} ${error?.message||''}`));
+  }, delay);
+  return true;
+}
+
 /* ---------- events ---------- */
 // Every media-element transition, logged. The 2026-10-16 log could not say whether a
 // four-minute silent window was a stalled element, a frozen page or a pause, because
@@ -1697,12 +1746,19 @@ function openSleepSheet(){
 let mediaLastPos = 0;
 let mediaSeekFrom = null;
 function mediaState(){
-  return `pos=${Math.round(audio.currentTime||0)} dur=${Number.isFinite(audio.duration)?Math.round(audio.duration):'-'} paused=${audio.paused} rs=${audio.readyState} ns=${audio.networkState} vis=${document.visibilityState}`;
+  const err = audio.error ? ` err=${audio.error.code}${audio.error.message ? ':' + String(audio.error.message).slice(0,60) : ''}` : '';
+  return `pos=${Math.round(audio.currentTime||0)} dur=${Number.isFinite(audio.duration)?Math.round(audio.duration):'-'} paused=${audio.paused} rs=${audio.readyState} ns=${audio.networkState} vis=${document.visibilityState}${err}`;
 }
 ['play','playing','pause','ended','waiting','stalled','suspend','abort','emptied','error','loadedmetadata','loadeddata','durationchange','ratechange'].forEach(ev => audio.addEventListener(ev, () => {
   diag(`media ${ev} ${mediaState()}`);
+  if(ev === 'play'){ lastStopReason = ''; lastTimeupdateAt = Date.now(); }
+  if(ev === 'error') audiobookMediaFailed('error');
 }));
-audio.addEventListener('timeupdate', () => { mediaLastPos = audio.currentTime; });
+audio.addEventListener('timeupdate', () => {
+  mediaLastPos = audio.currentTime;
+  lastTimeupdateAt = Date.now();
+  mediaRecoveryAttempts = 0;   // media is moving: a later failure starts fresh
+});
 audio.addEventListener('seeking', () => { mediaSeekFrom = mediaLastPos; diag(`media seeking ${Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); });
 audio.addEventListener('seeked', () => { diag(`media seeked ${mediaSeekFrom===null?'?':Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); mediaLastPos = audio.currentTime; mediaSeekFrom = null; });
 audio.addEventListener('ended', next);
@@ -1767,7 +1823,12 @@ setInterval(() => { if(sleepTimer) renderSleepChip(); }, 30000);
 // The heartbeat. A page the OS has frozen cannot log anything, so the beat's ABSENCE is
 // the signal — and it only speaks when nothing else has for 25s, so a chapter playing
 // normally adds no lines at all.
-setInterval(() => { if(Date.now() - lastDiagAt > 25000) diag(`hb ${mediaState()}`); }, 30000);
+setInterval(() => {
+  if(Date.now() - lastDiagAt > 25000) diag(`hb ${mediaState()}`);
+  // A stream that stops yielding media looks exactly like a chapter that ended: the clock
+  // stops and nothing says why. Recover it rather than waiting to be noticed.
+  if(playerMode === 'audiobook' && !audio.paused && !audio.ended && audio.currentTime > 0 && Date.now() - lastTimeupdateAt > 40000) audiobookMediaFailed('stalled 40s');
+}, 30000);
 
 $('#addBtn').addEventListener('click', openAddModal);
 $('#setBtn').addEventListener('click', openSettingsModal);

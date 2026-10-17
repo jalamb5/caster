@@ -59,6 +59,7 @@ export function bootCaster(executable = source) {
     addEventListener(type, fn){ windowListeners.set(type, [...(windowListeners.get(type) || []), fn]); },
   };
   const intervals = new Map();
+  const timeouts = new Map();
   const navigator = {mediaSession:{setPositionState(){},setActionHandler(){},playbackState:'paused'}};
   const context = vm.createContext({
     document, window, navigator, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, JellyfinClient, genericNormalizeChapters, createDeviceId,
@@ -67,12 +68,13 @@ export function bootCaster(executable = source) {
     sessionStorage:{getItem:k=>store.get(`session:${k}`)??null,setItem:(k,v)=>store.set(`session:${k}`,String(v)),removeItem:k=>store.delete(`session:${k}`)},
     fetch:async()=>({ok:false,status:404,json:async()=>({})}),
     DOMParser:class{}, URL, URLSearchParams, AbortController, MediaMetadata:class{},
-    setTimeout:()=>0, clearTimeout(){}, setInterval:(fn, ms)=>{ intervals.set(ms, [...(intervals.get(ms) || []), fn]); return 0; }, Math, Date, Map, Set, Object, String, Number, Array, Promise, Error, isFinite, console,
+    setTimeout:(fn, ms)=>{ timeouts.set(ms, [...(timeouts.get(ms) || []), fn]); return 0; }, clearTimeout(){}, setInterval:(fn, ms)=>{ intervals.set(ms, [...(intervals.get(ms) || []), fn]); return 0; }, Math, Date, Map, Set, Object, String, Number, Array, Promise, Error, isFinite, console,
   });
   vm.runInContext(executable, context);
   const fireWindow = (type, event = {}) => (windowListeners.get(type) || []).slice().forEach(fn => fn(event));
   const fireInterval = (ms) => (intervals.get(ms) || []).slice().forEach(fn => fn());
-  return {context, elements, store, script, fireWindow, fireInterval};
+  const fireTimeout = (ms) => (timeouts.get(ms) || []).slice().forEach(fn => fn());
+  return {context, elements, store, script, fireWindow, fireInterval, fireTimeout};
 }
 
 // Let every pending promise chain (PlaybackInfo -> report -> play) drain.

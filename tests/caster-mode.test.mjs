@@ -531,9 +531,10 @@ test('chapter rows and the resume button bind to the folder being browsed', () =
     'row clicks must not resolve the book through playback state');
 });
 
-// Fixtures for the session/diagnostics tests. The harness's element stub swallows
-// addEventListener, so events cannot be fired: these drive the session function directly
-// and assert the event wiring in source, which is the honest split.
+// Fixtures for the session/diagnostics tests. The harness records listeners and timers, so
+// element events, window events and timers can all be driven (dispatchEvent, fireWindow,
+// fireTimeout, fireInterval); these helpers exist to drive the session function directly
+// where booting a whole chapter would only add noise.
 const ticksFromDuration = (duration) => {
   const [h, m, sec] = duration.split(':').map(Number);
   return ((h * 3600) + (m * 60) + sec) * 1e7;
@@ -716,6 +717,91 @@ test('the heartbeat only speaks when nothing else has — the gap IS the signal'
   fireInterval(30000);
   assert.ok(vm.runInContext("casterDiag.filter(l => l.indexOf(' hb ') >= 0).length", context) >= 1,
     'a log that has gone quiet must beat, so a frozen page reads as a gap rather than as nothing');
+});
+
+/* ---- The stream can die mid-chapter, and it did: 2026-10-17, `media error` 14m52s into
+   THE CHAMBER OF SECRETS with nothing in the app reacting to it. These pin the reaction. ---- */
+
+// Put the app in "a chapter is playing", which is the state every recovery path needs.
+const playingChapter = async () => {
+  const boot = bootCaster();
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", boot.context);
+  const chapters = chaptersOf('a book');
+  boot.context.__client = makeJellyfinClient(chapters);
+  makeChapterContext(boot.context, chapters);
+  vm.runInContext('audiobookClient=__client;', boot.context, {timeout:5000});
+  await vm.runInContext(
+    "startAudiobookSession({id:'b1'}, chapterList[0], {positionTicks:0, autoplay:true})", boot.context, {timeout:5000});
+  await flushChains(boot.context);
+  vm.runInContext('casterDiag.length = 0', boot.context);
+  boot.audio = boot.elements.get('audio');
+  return boot;
+};
+
+test('a media error restarts the chapter where it died instead of ending the night', async () => {
+  const {context, audio, fireTimeout} = await playingChapter();
+  let loads = 0;
+  audio.load = () => { loads += 1; };
+  vm.runInContext('audio.currentTime = 892', context);
+  audio.dispatchEvent({type:'error'});
+
+  const armed = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(armed, /media error pos=892/, 'the element failing must be recorded, with its position');
+  assert.match(armed, /media recovery 1\/3 \(error\) in 2000ms from 892s/,
+    'the failure must arm a recovery at the position it died, not from 0');
+
+  fireTimeout(2000);
+  await new Promise(r => setImmediate(r));
+  assert.equal(loads, 1, 'the dead stream must actually be reloaded');
+  assert.match(vm.runInContext('JSON.stringify(audiobookPendingResume)', context), /"seconds":892/,
+    'the seek must ride the loadedmetadata resume path — a seek before metadata is dropped');
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /media recovery 1 playing from/,
+    'recovery must end in playback, not in a reload nobody notices');
+});
+
+test('recovery gives up loudly after three attempts instead of thrashing a dead stream', async () => {
+  const {context, audio, fireTimeout} = await playingChapter();
+  audio.load = () => {};
+  vm.runInContext('audio.currentTime = 500', context);
+  for(const delay of [2000, 5000, 12000]){
+    audio.dispatchEvent({type:'error'});
+    fireTimeout(delay);
+  }
+  audio.dispatchEvent({type:'error'});   // a fourth failure must not arm a fifth attempt
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  [1, 2, 3].forEach(n => assert.match(log, new RegExp(`media recovery ${n}/3`), `attempt ${n} must run`));
+  assert.match(log, /media recovery gave up after 3 attempts/);
+  assert.equal(vm.runInContext('mediaRecoveryTimer ? 1 : 0', context), 0, 'nothing may be left in flight');
+  assert.match(vm.runInContext('audiobookError', context), /could not be restarted/,
+    'when it truly cannot recover he must be told, not left with silence');
+});
+
+test('a stream that stops yielding media is recovered, not waited on', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  vm.runInContext('audio.currentTime = 300; audio.paused = false; lastTimeupdateAt = Date.now()', context);
+  fireInterval(30000);
+  assert.doesNotMatch(vm.runInContext("casterDiag.join(' | ')", context), /media recovery/,
+    'a healthy stream must be left alone');
+
+  vm.runInContext('lastTimeupdateAt = Date.now() - 60000', context);
+  fireInterval(30000);
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /media recovery 1\/3 \(stalled 40s\)/,
+    'a media clock that has stopped is a dead stream, and it must be recovered unattended');
+});
+
+test('recovery leaves a chapter he deliberately paused alone', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  audio.load = () => {};
+  vm.runInContext("playerMode='audiobook'; pause('user')", context);
+  audio.dispatchEvent({type:'error'});
+  vm.runInContext('lastTimeupdateAt = Date.now() - 60000', context);
+  fireInterval(30000);
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(log, /pause requested: user/);
+  assert.doesNotMatch(log, /media recovery/,
+    'a failure after a deliberate pause must not be "fixed" by restarting playback at him');
 });
 
 test('the diagnostics are reachable from the audiobook screen and copyable', () => {
