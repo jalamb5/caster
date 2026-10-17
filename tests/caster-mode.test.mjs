@@ -804,6 +804,75 @@ test('recovery leaves a chapter he deliberately paused alone', async () => {
     'a failure after a deliberate pause must not be "fixed" by restarting playback at him');
 });
 
+/* ---- Replaying the RECORDED sequences rather than my idea of them. The 2026-10-16/17 logs
+   are the fixture: the phone's actual event stream, fed through the real app. A failure here
+   is a failure of the behaviour he hit, not of an invented scenario. ---- */
+const replay = (context, audio, stream) => stream.forEach(([type, state]) => {
+  if(state) vm.runInContext(`Object.assign(audio, ${JSON.stringify(state)})`, context);
+  audio.dispatchEvent({type});
+});
+
+test('replay: the recorded failure — `media error` at 892s of a 2385s chapter — is survived', async () => {
+  const {context, audio, fireTimeout} = await playingChapter();
+  let loads = 0;
+  audio.load = () => { loads += 1; };
+  vm.runInContext('casterDiag.length = 0', context);
+  replay(context, audio, [
+    ['play', {paused:false, duration:2385, currentTime:0}],
+    ['durationchange', {}], ['loadedmetadata', {}], ['loadeddata', {}], ['playing', {}],
+    // 23:15:48 — 14m52s in, with 1493s of chapter still in front of it
+    ['error', {currentTime:892, paused:true}],
+    ['pause', {}],
+  ]);
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(log, /media error pos=892 dur=2385/, 'the recorded failure must be recognisable in the log');
+  assert.match(log, /media recovery 1\/3 \(error\) in 2000ms from 892s/,
+    'the replay must arm the recovery at the position the real one died at');
+  fireTimeout(2000);
+  await new Promise(r => setImmediate(r));
+  assert.equal(loads, 1, 'the dead stream must be reloaded');
+  // the observable proof, not the internal: the armed resume is consumed by the render path
+  // the moment duration is known, which is exactly how the seek lands (see resume-seek)
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /resume-seek \d+->892/,
+    'it must come back at 892s, not at 0 — 1493s of chapter would otherwise be re-listened');
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context), /media recovery 1 playing from/);
+});
+
+test('a chapter that ends while the page is suspended still advances when it comes back', async () => {
+  const {context, audio, fireWindow} = await playingChapter();
+  const ids = vm.runInContext('chapterList.map(c => c.id)', context);
+  vm.runInContext([
+    'casterDiag.length = 0; document.visibilityState = "visible";',
+    'audio.currentTime = 600; audio.duration = 600; audio.ended = true; audio.paused = true',
+  ].join(' '), context);
+  fireWindow('visibilitychange');
+  await flushChains(context);
+
+  assert.equal(vm.runInContext('audiobookActiveChapterId', context), ids[1],
+    '`ended` fired into a suspended page and was lost: coming back must notice it finished');
+  assert.match(vm.runInContext("casterDiag.join(' | ')", context),
+    /chapter finished while the page was not running \(page visible\) — advancing/,
+    'the log must say WHY it advanced without an ended event');
+});
+
+test('a finished last chapter is handled once, not once per watchdog tick', async () => {
+  const {context, audio, fireWindow, fireInterval} = await playingChapter();
+  vm.runInContext('adoptAudiobookChapter("b1", chapterList[1])', context);
+  vm.runInContext([
+    'casterDiag.length = 0; document.visibilityState = "visible";',
+    'audio.currentTime = 600; audio.duration = 600; audio.ended = true; audio.paused = true',
+  ].join(' '), context);
+  fireWindow('visibilitychange');
+  fireInterval(30000);
+  fireWindow('visibilitychange');
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  const handled = (log.match(/end of book/g) || []).length;
+  assert.equal(handled, 1,
+    `the end of the book must be announced once, not on every wake-up (got ${handled})`);
+});
+
 test('the diagnostics are reachable from the audiobook screen and copyable', () => {
   assert.match(html, /id="abDiagBtn"/, 'the audiobook screen must offer the log');
   assert.match(html, /id="diagCopy"/, 'the log must be copyable without typing anything by hand');

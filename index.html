@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=9';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=9';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=10';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=10';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -368,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=9');
+    const r = await fetch('feeds.json?v=10');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -629,7 +629,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-17a';
+const CASTER_BUILD = '2026-10-17b';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
@@ -1088,6 +1088,7 @@ async function startAudiobookSession(book,chapter,{positionTicks=chapter.positio
       })
     : Promise.resolve();
   audiobookSessionAttempts = 0;
+  audiobookFinishedHandledFor = null;
   diag(`chapter start: ${chapter.title || chapter.id}`);
   await ensureAudiobookSession(chapter, generation, ticksToSeconds(startTicks)||0);
   await playAttempt;
@@ -1700,6 +1701,24 @@ let mediaRecoveryAttempts = 0;
 let mediaRecoveryTimer = null;
 let lastTimeupdateAt = 0;
 let lastStopReason = '';        // set only by OUR pauses, never by the browser's own
+let audiobookFinishedHandledFor = null;
+// The advance hangs entirely on the `ended` event. If the page is suspended when a chapter
+// ends, that event fires into nothing and is lost: the app then sits at the end of a
+// finished chapter looking fine. Worse, the resume-on-visible path refuses to touch an
+// ended element (`!audio.ended`), so it can never recover either. Anything that observes
+// "this element is finished" has to move on itself.
+function audiobookFinishIfDone(why){
+  if(playerMode !== 'audiobook' || !audio.src) return false;
+  const chapter = currentAudiobookChapter();
+  if(!chapter || audiobookFinishedHandledFor === chapter.id) return false;
+  const duration = Number(audio.duration);
+  const finished = audio.ended || (Number.isFinite(duration) && duration > 0 && audio.currentTime >= duration - 0.5);
+  if(!finished || !(audio.currentTime > 0)) return false;
+  audiobookFinishedHandledFor = chapter.id;
+  diag(`chapter finished while the page was not running (${why}) — advancing`);
+  nextAudiobookChapter();
+  return true;
+}
 function audiobookMediaFailed(why){
   if(playerMode !== 'audiobook' || !audio.src || audio.ended) return false;
   const chapter = currentAudiobookChapter();
@@ -1801,6 +1820,7 @@ window.addEventListener('pagehide', () => {
 window.addEventListener('visibilitychange', () => {
   diag(`visibility ${document.visibilityState} ${mediaState()}`);
   if(document.visibilityState !== 'visible') return;
+  if(audiobookFinishIfDone('page visible')) return;
   if(playerMode !== 'audiobook' || !audiobookSession) return;
   // Audio may have been paused by the browser during background; resume if it was actively playing
   if(audio.paused && audio.currentTime > 0 && !audio.ended){
@@ -1809,6 +1829,7 @@ window.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pageshow', (e) => {
   diag(`pageshow persisted=${e.persisted} ${mediaState()}`);
+  if(audiobookFinishIfDone('pageshow')) return;
   if(!e.persisted || playerMode !== 'audiobook') return;
   // Restored from bfcache — audio state is gone, refresh from server position
   if(!audiobookActiveBookId || !audiobookActiveChapterId) return;
@@ -1824,6 +1845,7 @@ setInterval(() => { if(sleepTimer) renderSleepChip(); }, 30000);
 // the signal — and it only speaks when nothing else has for 25s, so a chapter playing
 // normally adds no lines at all.
 setInterval(() => {
+  if(audiobookFinishIfDone('watchdog')) return;
   if(Date.now() - lastDiagAt > 25000) diag(`hb ${mediaState()}`);
   // A stream that stops yielding media looks exactly like a chapter that ended: the clock
   // stops and nothing says why. Recover it rather than waiting to be noticed.
