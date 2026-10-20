@@ -46,8 +46,9 @@ export function appendEvent(type) {
   const events = loadEvents();
   const ev = { t: Date.now(), type };
   events.push(ev);
-  // Keep it bounded: ~2 years of nightly events is plenty
-  if (events.length > 5000) events.splice(0, events.length - 5000);
+  // Keep it bounded: a few hundred nights is plenty, and the whole list is rewritten on
+  // every play, so its size is a per-tap cost. The trend view reads the last 7.
+  if (events.length > 500) events.splice(0, events.length - 500);
   saveEvents(events);
   return ev;
 }

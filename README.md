@@ -11,12 +11,15 @@ your device (or go through your own proxy).
 
 ```bash
 cd ~/repos/caster
-python3 serve.py            # http://0.0.0.0:8765 — includes same-origin /fetch proxy
+python3 serve.py                 # http://127.0.0.1:8765 — this Mac only
+python3 serve.py 8765 0.0.0.0    # also reachable from your phone on the same Wi-Fi
 ```
 
 Open `http://localhost:8765` on this Mac, or `http://<this-mac-ip>:8765` from
-your phone on the same Wi-Fi. The `/fetch` endpoint fetches RSS server-side so
-the browser never hits CORS walls and no third-party proxy sees your feeds.
+your phone (second form). The `/fetch` endpoint fetches RSS server-side so the
+browser never hits CORS walls and no third-party proxy sees your feeds. It will
+fetch any URL it is given, which is why it stays on the loopback address unless
+you name a host.
 
 ## GitHub Pages
 
@@ -29,8 +32,9 @@ Already-saved shows work offline.
 Audiobook sign-in connects directly from your browser to your HTTPS Jellyfin
 server. Enter the server URL, Jellyfin username and password; Caster finds the
 Harry Potter series folder by its seven numbered book folders, so you do not
-need to know its exact parent-folder name. The password is not saved and the
-access token stays in memory only. If the browser cannot read Jellyfin's
+need to know its exact parent-folder name. The password is never saved; the
+access token is kept on this device (in its own `localStorage` key) so a reload
+does not ask for it again — Sign out clears it. If the browser cannot read Jellyfin's
 response, allow `https://jalamb5.github.io` in the server's CORS settings.
 
 ### Refreshing show data

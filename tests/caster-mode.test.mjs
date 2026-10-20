@@ -61,8 +61,17 @@ test('audiobook chapters advance sequentially without calling podcast selection'
   assert.match(result.src,/Audio\/ch2/);
 });
 
-test('Jellyfin access tokens are never written to browser storage', () => {
-  assert.doesNotMatch(script,/sessionStorage|accessToken.*(?:localStorage|sessionStorage)/);
+test('the saved Jellyfin token stays in its own key — never in state, source or the log', () => {
+  // This used to claim "tokens are never written to browser storage" with a regex that could
+  // not fail: the write site has `localStorage.setItem(` on one line and `accessToken:` on the
+  // next, and `.` does not cross a newline. The persistence is deliberate; these are the
+  // invariants that actually hold and are actually worth failing on.
+  assert.match(script,/localStorage\.setItem\(JELLYFIN_TOKEN_KEY/,
+    'session durability is deliberate — a reload must not demand the password again');
+  assert.doesNotMatch(script,/setItem\([^)]*password/i, 'the password is never stored');
+  assert.doesNotMatch(script,/state\.[A-Za-z_.]*[Tt]oken/,
+    'the token must not ride along inside app state, which is rewritten on a hot path');
+  assert.doesNotMatch(script,/diag\([^)]*accessToken/, 'the token must never reach the diagnostics log');
 });
 
 test('Jellyfin server address is supplied at sign-in, not published as a personal default', () => {
@@ -95,9 +104,14 @@ test('blank Jellyfin credentials are reported before a request', async () => {
   assert.match(value,/Enter your Jellyfin username/);
 });
 
-test('resume position does not overwrite Jellyfin user data in browser storage', () => {
-  const {store}=bootCaster();
-  assert.equal([...store.keys()].some(key=>key.includes('audiobook.position')),false);
+test('starting a chapter writes a pointer bookmark, never a cached Jellyfin position', async () => {
+  // The old version asserted that a key nothing ever writes is absent, so it could not fail.
+  const {store} = await playingChapter();
+  const bookmark = JSON.parse(store.get('caster.jellyfin.resume'));
+  assert.equal(bookmark.bookId, 'b1', 'the bookmark points at the book');
+  assert.equal(bookmark.chapterId, 'b1-ch1', 'and at the chapter being played');
+  assert.equal('positionTicks' in bookmark, false,
+    'a pointer, not a position cache — the server owns how far in you are');
 });
 
 test('chapter-end stops at final chapter and does not roll into the next book', async () => {
@@ -649,6 +663,7 @@ test('the diagnostic log records the session lifecycle and is persisted and boun
   assert.match(log, /session attempt 1\/6/);
   assert.match(log, /session ok/);
 
+  vm.runInContext('diagFlush()', context);   // writes are batched; pagehide flushes in the app
   const stored = store.get('caster.diag.v1');
   assert.ok(stored, 'the log must survive a reload');
   const parsed = JSON.parse(stored);
@@ -964,4 +979,95 @@ test('a pause he asked for is left alone', async () => {
   assert.doesNotMatch(vm.runInContext("casterDiag.join(' | ')", context), /media interrupted/,
     'resuming a deliberate pause would be the app fighting him');
   assert.equal(vm.runInContext('audio.playCalls', context), plays, 'and it must not play');
+});
+
+/* ---- Findings from the whole-repo audit, one test each: the invariants that were claimed
+   but not checked, and the two hot paths that used to write far more than they needed. ---- */
+
+test('feed durations parse leniently — the values that used to delete whole shows', () => {
+  const {context} = bootCaster();
+  const out = vm.runInContext(`[
+    parseDuration('3600'), parseDuration('1:02:03'), parseDuration('1:02:03.5'),
+    parseDuration('3723.5'), parseDuration('PT1H2M3S'), parseDuration('')
+  ].join(',')`, context);
+  assert.equal(out, '3600,3723,3723.5,3723.5,0,0',
+    'a fractional or ISO duration must not throw: the Python twin treated it as a dead feed');
+});
+
+test('the 4-second position save writes the small position key, not the whole library', () => {
+  const {context} = bootCaster();
+  const res = vm.runInContext(`(() => {
+    const keys = [];
+    const real = localStorage.setItem;
+    localStorage.setItem = (k, v) => { keys.push(k); return real(k, v); };
+    state.shows = [{ id:'s', feedUrl:'f', title:'t', episodes:[{guid:'g1', url:'u.mp3', duration:100, title:'t'}] }];
+    currentShowId='s'; currentGuid='g1'; playerMode='podcast';
+    audio.duration = 100; audio.currentTime = 42; lastPosSave = 0;
+    audio.dispatchEvent({type:'timeupdate'});       // the hot path, once
+    localStorage.setItem = real;
+    return {keys, stored: positions['g1']};
+  })()`, context);
+  assert.ok(res.keys.includes('caster.positions.v1'), 'the position must still be persisted');
+  assert.equal(res.keys.includes('caster.v1'), false,
+    'rewriting the 515 KB library to store one number was the finding');
+  assert.equal(res.stored, 42, 'and the value is the position');
+});
+
+test('a chapter advance opens ONE Jellyfin session when both callers race', async () => {
+  const {context} = bootCaster();
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", context);
+  const chapters = chaptersOf('a book');
+  const client = makeJellyfinClient(chapters);
+  let calls = 0, reports = 0;
+  const real = client.getPlaybackInfo.bind(client);
+  client.getPlaybackInfo = async (c) => { calls += 1; return real(c); };
+  client.reportStarted = async () => { reports += 1; };
+  context.__client = client;
+  makeChapterContext(context, chapters);
+  vm.runInContext('audiobookClient=__client;', context, {timeout:5000});
+
+  // exactly what the chapter start and the media element's play event do, in one tick
+  await vm.runInContext(`Promise.all([
+    ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0),
+    ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0),
+  ])`, context, {timeout:5000});
+  await flushChains(context);
+
+  assert.equal(calls, 1, 'two requests meant two server sessions per advance (69 on his server)');
+  assert.equal(reports, 1, 'and the session is reported once');
+});
+
+test('the interruption resume gives up after three tries instead of logging forever', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  replay(context, audio, [['play', {paused:false}]]);          // a chapter that is playing
+  vm.runInContext('audio.duration = 1253; audio.currentTime = 924; audiobookPendingResume = null', context);
+  audio.dispatchEvent({type:'pause'});                          // 06:42:10 — nobody asked for this
+  audio.play = () => Promise.reject(new Error('no audio focus'));
+  for(let i = 0; i < 5; i++){
+    vm.runInContext('audio.paused = true; lastStopReason = ""', context);
+    fireInterval(30000);
+  }
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.equal((log.match(/media interrupted/g) || []).length, 3,
+    'unbounded, this retried and logged on every 30s tick for as long as the focus was held');
+  assert.match(log, /interrupted resume gave up after 3 attempts/);
+  assert.match(vm.runInContext('audiobookError', context), /could not be resumed/,
+    'and the give-up is visible in the player, not just the log');
+});
+
+test('a failed boot check keeps the token; only a rejection clears it', async () => {
+  const boot = bootCaster();
+  const token = JSON.stringify({ serverUrl:'https://jellyfin.example.test', accessToken:'tok', userId:'u1', deviceId:'d1' });
+  const bootWith = async (thrown) => {
+    boot.store.set('caster.jellyfin.token', token);
+    boot.context.__thrown = thrown;
+    // the app builds its own client, and the class uses Node's real fetch, so stand in for it
+    vm.runInContext('JellyfinClient = class { constructor(){} request(){ return Promise.reject(__thrown); } }', boot.context);
+    await vm.runInContext('tryResumeJellyfinSession()', boot.context, {timeout:5000});
+    return boot.store.get('caster.jellyfin.token');
+  };
+  assert.equal(await bootWith(new Error('network down')), token,
+    'being offline must not sign him out — the password is not stored anywhere');
+  assert.equal((await bootWith(Object.assign(new Error('rejected'), { status: 401 }))) ?? null, null,
+    'a real rejection still clears it');
 });

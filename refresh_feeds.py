@@ -58,16 +58,25 @@ def text(el):
 
 
 def parse_duration(s):
+    """Seconds from <itunes:duration>; junk returns 0.
+
+    Raises nothing, on purpose: one odd value (a fractional "1:02:03.5", an ISO "PT1H2M3S")
+    used to abort the whole feed, and a show missing from feeds.json is deleted from the app
+    along with its play history.
+    """
     s = s.strip()
     if not s:
         return 0
-    if s.isdigit():
-        return int(s)
-    parts = [int(p) for p in s.split(':')]
+    try:
+        parts = [float(p) for p in s.split(':')]
+    except ValueError:
+        return 0
     if len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        return int(parts[0] * 3600 + parts[1] * 60 + parts[2])
     if len(parts) == 2:
-        return parts[0] * 60 + parts[1]
+        return int(parts[0] * 60 + parts[1])
+    if len(parts) == 1:
+        return int(parts[0])
     return 0
 
 
@@ -139,6 +148,7 @@ def parse_feed(url, raw):
 def main():
     shows = []
     total = 0
+    failed = []
     for url in FEEDS:
         print(f"fetching {url} ...", end=' ', flush=True)
         try:
@@ -147,9 +157,13 @@ def main():
             total += len(show['episodes'])
             print(f"OK — {show['title']} ({len(show['episodes'])} eps)")
         except Exception as e:
+            failed.append(url)
             print(f"FAILED: {e}")
-            if len(FEEDS) == 1:
-                sys.exit(1)
+
+    if failed:
+        # Never publish a smaller library: the app prunes any show missing from feeds.json and
+        # its play history goes with it. Keep yesterday's file, fail loudly, fix FEEDS.
+        sys.exit(f"refusing to write feeds.json — {len(failed)} feed(s) failed: {', '.join(failed)}")
 
     import datetime
     data = {'updated': datetime.datetime.now(datetime.timezone.utc)

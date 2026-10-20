@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=11';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=11';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=12';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=12';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -316,12 +316,6 @@ async function getCachedBlobUrl(ep){
   }catch(e){ return null; }
 }
 
-async function downloadPendingUrls(){
-  const caches = await caches.open(CACHE_NAME);
-  const keys = await caches.keys();
-  return keys.map(r => r.url);
-}
-
 let cachedBlobUrl = null;
 function revokeCachedBlob(){
   if(cachedBlobUrl){ URL.revokeObjectURL(cachedBlobUrl); cachedBlobUrl = null; }
@@ -368,7 +362,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=11');
+    const r = await fetch('feeds.json?v=12');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -396,6 +390,7 @@ async function loadBundledShows(){
         state.shows.push({ id: bs.feedUrl, feedUrl: bs.feedUrl, title: bs.title, author: bs.author, artwork: bs.artwork, episodes: eps });
       }
     }
+    for(const s of state.shows) applyStoredPositions(s);
     saveState();
   }catch(e){ /* offline or first load — user-added shows still work */ }
 }
@@ -446,7 +441,7 @@ function markHeard(ep, t=now()){            // started or skipped → sinks for 
 function markPlayedIfDone(){
   const ep = current();
   if(!ep || !ep.duration || ep.isPlayed) return;
-  if(audio.currentTime / ep.duration >= 0.85){ ep.isPlayed = true; ep.position = 0; saveState(); renderAll(); }
+  if(audio.currentTime / ep.duration >= 0.85){ ep.isPlayed = true; ep.position = 0; savePosition(ep.guid, 0); saveState(); renderAll(); }
 }
 
 /* ---------- RSS ---------- */
@@ -457,6 +452,7 @@ function parseDuration(s){
   const p = s.split(':').map(Number);
   if(p.length === 3) return p[0]*3600 + p[1]*60 + p[2];
   if(p.length === 2) return p[0]*60 + p[1];
+  if(p.length === 1) return Number.isFinite(p[0]) ? p[0] : 0;   // bare seconds, seconds.fraction
   return 0;
 }
 function parseFeed(xml, feedUrl){
@@ -504,9 +500,8 @@ async function fetchWithCors(url){
   const attempts = [
     ['direct', url],
     ['local', '/fetch?url=' + encodeURIComponent(url)],
-    ['allorigins', 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url)],
-    ['corsproxy', 'https://corsproxy.io/?url=' + encodeURIComponent(url)],
-    ['codetabs', 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url)],
+    // No public proxies: a private Patreon feed URL is the key to that paid feed, and this
+    // list used to hand it to three strangers whenever the direct fetch failed.
   ];
   if(state.settings.customProxy) attempts.push(['custom', state.settings.customProxy + encodeURIComponent(url)]);
   let lastErr;
@@ -571,6 +566,7 @@ async function refreshShow(id){
     if(old) Object.assign(ne, { isPlayed:old.isPlayed, playCount:old.playCount, lastPlayedAt:old.lastPlayedAt, position:old.position });
   });
   show.episodes = parsed.episodes;
+  applyStoredPositions(show);
   saveState();
 }
 
@@ -582,6 +578,23 @@ let sleepTimer = null;   // {mode:'minutes', at, ms} | {mode:'end'} | null
 let posSaveTimer = null;
 let lastProgress = 0;
 let lastPosSave = 0;
+// Podcast positions live in their own small key, not in `state`: the 4-second save used to
+// reserialise the entire library (515 KB, ~7.7 MB a minute) to store one number.
+// shortcut: the whole map is rewritten, not one entry — fine while it stays in the tens of KB.
+const POS_KEY = 'caster.positions.v1';
+let positions = {};
+try{ positions = JSON.parse(localStorage.getItem(POS_KEY) || '{}') || {}; }catch(e){ positions = {}; }
+function savePosition(guid, seconds){
+  if(!guid) return;
+  if(seconds > 0) positions[guid] = Math.round(seconds); else delete positions[guid];
+  try{ localStorage.setItem(POS_KEY, JSON.stringify(positions)); }catch(e){}
+}
+function applyStoredPositions(show){
+  for(const ep of show?.episodes || []){
+    const p = positions[ep.guid];
+    if(Number.isFinite(p)) ep.position = p;
+  }
+}
 
 /* Audiobooks have an isolated queue and session; podcast show IDs and shuffle rules remain untouched. */
 let playerMode = 'podcast';
@@ -629,7 +642,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-20a';
+const CASTER_BUILD = '2026-10-20b';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
@@ -640,12 +653,16 @@ let casterDiag = [];
 let lastDiagAt = 0;
 try { casterDiag = JSON.parse(localStorage.getItem(CASTER_DIAG_KEY) || '[]'); } catch(e) { casterDiag = []; }
 if(!Array.isArray(casterDiag)) casterDiag = [];
+let diagWrites = 0;
+function diagFlush(){ try { localStorage.setItem(CASTER_DIAG_KEY, JSON.stringify(casterDiag)); } catch(e){} }
 function diag(message){
   const stamp = new Date().toISOString().slice(11,19);
   lastDiagAt = Date.now();
   casterDiag.push(`${stamp} ${message}`);
   if(casterDiag.length > CASTER_DIAG_MAX) casterDiag = casterDiag.slice(-CASTER_DIAG_MAX);
-  try { localStorage.setItem(CASTER_DIAG_KEY, JSON.stringify(casterDiag)); } catch(e){}
+  // Persist every few lines, not every line: this buffer is tens of KB and diag() runs on
+  // every media event. diagText() reads memory, so a copy always shows everything anyway.
+  if(++diagWrites % 5 === 0) diagFlush();
 }
 function diagText(){
   return `caster ${CASTER_BUILD} · ${new Date().toISOString()} · ${casterDiag.length} events\n` + casterDiag.join('\n');
@@ -708,8 +725,14 @@ async function tryResumeJellyfinSession(){
     renderAll();
     return true;
   }catch(e){
-    diag('boot: stored session rejected, token cleared');
-    localStorage.removeItem(JELLYFIN_TOKEN_KEY);
+    // Only a real rejection means the token is bad. Clearing it on any error signed him out
+    // whenever the phone was offline or the server was asleep — and the password is not saved.
+    if(e?.status === 401 || e?.status === 403){
+      diag('boot: stored session rejected, token cleared');
+      localStorage.removeItem(JELLYFIN_TOKEN_KEY);
+    }else{
+      diag('boot: session check failed, token kept');
+    }
     return false;
   }
 }
@@ -1003,7 +1026,18 @@ function withSessionTimeout(promise, ms = SESSION_TIMEOUT_MS){
 // chapter start AND from the media-clock tick, so a session that fails at tap time is
 // retried while the chapter plays. Pressing the play button on an already-loaded file
 // now establishes one too — it previously never did, which is one reading of "no session".
-async function ensureAudiobookSession(chapter, generation, positionSeconds){
+// The chapter start and the media element's `play` event both call this within milliseconds.
+// Both used to sail past the `audiobookSession` check while the request was in flight, so every
+// advance opened TWO Jellyfin sessions (his log: two "session ok"; his server: 69 sessions).
+let audiobookSessionPromise = null;
+function ensureAudiobookSession(chapter, generation, positionSeconds){
+  if(!audiobookSessionPromise){
+    audiobookSessionPromise = openAudiobookSession(chapter, generation, positionSeconds)
+      .finally(() => { audiobookSessionPromise = null; });
+  }
+  return audiobookSessionPromise;
+}
+async function openAudiobookSession(chapter, generation, positionSeconds){
   if(!audiobookClient || !chapter) return false;
   if(audiobookSession) return true;
   if(generation !== audiobookPlaybackGeneration) return false;
@@ -1630,7 +1664,7 @@ function openSettingsModal(){
     <p class="hint" id="guardLabel">${s.repeatGuardHours} hour(s) — stops the same episode coming back tonight</p>
     <label class="f">Custom CORS proxy (optional — e.g. your own Mini proxy)</label>
     <input type="text" id="proxyInput" placeholder="https://…/fetch?url=" value="${esc(s.customProxy)}">
-    <p class="hint">Leave blank for auto (direct → allorigins → corsproxy). Point at your own proxy to keep feed fetches private.</p>
+    <p class="hint">Leave blank to try direct, then your own server's /fetch. Point at your own proxy to keep feed fetches private.</p>
     <p class="hint" id="bundledDate">${state.bundledUpdated ? 'Bundled show data: updated ' + esc(new Date(state.bundledUpdated).toLocaleDateString()) + '.' : ''}</p>
     <div id="sleepTrend"></div>
   `, () => {
@@ -1702,6 +1736,7 @@ let mediaRecoveryTimer = null;
 let lastTimeupdateAt = 0;
 let lastStopReason = '';        // set only by OUR pauses, never by the browser's own
 let audiobookFinishedHandledFor = null;
+let interruptResumeAttempts = 0;
 // The advance hangs entirely on the `ended` event. If the page is suspended when a chapter
 // ends, that event fires into nothing and is lost: the app then sits at the end of a
 // finished chapter looking fine. Worse, the resume-on-visible path refuses to touch an
@@ -1765,6 +1800,18 @@ function audiobookResumeIfInterrupted(why){
   if(!audio.paused || lastStopReason) return false;
   if(!lastTimeupdateAt || !(audio.currentTime > 0)) return false; // never played here
   if(!currentAudiobookChapter()) return false;
+  // Bounded, like the stream recovery. Unbounded, an audio-focus holder (a call) made this
+  // retry AND log on every 30s tick forever, filling the diagnostics buffer with nothing.
+  if(interruptResumeAttempts >= MEDIA_RECOVERY_ATTEMPTS){
+    if(interruptResumeAttempts === MEDIA_RECOVERY_ATTEMPTS){
+      interruptResumeAttempts += 1;
+      audiobookError = 'Playback was interrupted and could not be resumed — tap play';
+      diag(`interrupted resume gave up after ${MEDIA_RECOVERY_ATTEMPTS} attempts`);
+      renderAll();
+    }
+    return false;
+  }
+  interruptResumeAttempts += 1;
   diag(`media interrupted (${why}) — resuming from ${Math.round(audio.currentTime)}s`);
   audio.play().catch(error => diag(`interrupted-resume play rejected: ${error?.name||''} ${error?.message||''}`));
   return true;
@@ -1784,13 +1831,14 @@ function mediaState(){
 }
 ['play','playing','pause','ended','waiting','stalled','suspend','abort','emptied','error','loadedmetadata','loadeddata','durationchange','ratechange'].forEach(ev => audio.addEventListener(ev, () => {
   diag(`media ${ev} ${mediaState()}`);
-  if(ev === 'play'){ lastStopReason = ''; lastTimeupdateAt = Date.now(); }
+  if(ev === 'play'){ lastStopReason = ''; lastTimeupdateAt = Date.now(); interruptResumeAttempts = 0; }
   if(ev === 'error') audiobookMediaFailed('error');
 }));
 audio.addEventListener('timeupdate', () => {
   mediaLastPos = audio.currentTime;
   lastTimeupdateAt = Date.now();
   mediaRecoveryAttempts = 0;   // media is moving: a later failure starts fresh
+  interruptResumeAttempts = 0;
 });
 audio.addEventListener('seeking', () => { mediaSeekFrom = mediaLastPos; diag(`media seeking ${Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); });
 audio.addEventListener('seeked', () => { diag(`media seeked ${mediaSeekFrom===null?'?':Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); mediaLastPos = audio.currentTime; mediaSeekFrom = null; });
@@ -1815,19 +1863,20 @@ audio.addEventListener('timeupdate', () => {
   }
   markPlayedIfDone();
   if(now() - lastProgress > 500){ renderOverlay(); lastProgress = now(); }
-  if(now() - lastPosSave > 4000){ lastPosSave = now(); const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); } }
+  if(now() - lastPosSave > 4000){ lastPosSave = now(); const ep = current(); if(ep){ ep.position = audio.currentTime; savePosition(ep.guid, audio.currentTime); } }
 });
 audio.addEventListener('play', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook'){ scheduleAudiobookProgress(); const ch=currentAudiobookChapter(); if(!audiobookSession && ch){ diag('play without a session — establishing'); ensureAudiobookSession(ch, audiobookPlaybackGeneration, audio.currentTime); } } try{ appendEvent('play'); }catch(e){} });
 audio.addEventListener('pause', () => { if(navigator.mediaSession) navigator.mediaSession.playbackState = 'paused'; renderPlayerBar(); renderOverlay(); if(playerMode==='audiobook') cancelAudiobookReportTimer(); });
 audio.addEventListener('loadedmetadata', () => { applyAudiobookResumePosition(); updateMediaSession(); renderOverlay(); });
 window.addEventListener('pagehide', () => {
   diag(`pagehide ${mediaState()}`);
+  diagFlush();
   if(playerMode==='audiobook'){
     const chapter=currentAudiobookChapter();
     if(chapter && Number.isFinite(audio.currentTime)) queueAudiobookReport('stopped',audio.currentTime,true)
     return;
   }
-  const ep = current(); if(ep){ ep.position = audio.currentTime; saveState(); }
+  const ep = current(); if(ep){ ep.position = audio.currentTime; savePosition(ep.guid, audio.currentTime); saveState(); }
 });
 
 // Resume playback after mobile browser tab suspension (screen lock / backgrounding)

@@ -5,10 +5,14 @@ Serves the single-file app AND fetches podcast RSS server-side, so the
 browser never hits CORS walls and no third-party proxy sees your feeds.
 
 Usage:
-    python3 serve.py [port]        # default 8765, binds 0.0.0.0
+    python3 serve.py [port] [host]   # default 8765 on 127.0.0.1 — this Mac only
 
-On your phone (same Wi-Fi):
-    http://<this-mac-ip>:8765      # e.g. http://192.168.1.50:8765
+On your phone (same Wi-Fi) — only if you ask for it:
+    python3 serve.py 8765 0.0.0.0
+    http://<this-mac-ip>:8765        # e.g. http://192.168.1.50:8765
+
+/fetch retrieves ANY url it is handed, so it stays on the loopback address unless you
+name a host to bind.
 
 The app automatically uses /fetch?url=... when it is available.
 """
@@ -20,6 +24,7 @@ import urllib.parse
 import urllib.request
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+HOST = sys.argv[2] if len(sys.argv) > 2 else '127.0.0.1'
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -53,6 +58,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-with socketserver.ThreadingTCPServer(('0.0.0.0', PORT), Handler) as httpd:
-    print(f'Caster: http://0.0.0.0:{PORT}  (on your LAN: http://<this-mac-ip>:{PORT})')
+with socketserver.ThreadingTCPServer((HOST, PORT), Handler) as httpd:
+    print(f'Caster: http://{HOST}:{PORT}')
+    if HOST not in ('127.0.0.1', 'localhost', '::1'):
+        print(f'  on your LAN: http://<this-mac-ip>:{PORT}  — /fetch will proxy any URL for anyone who can reach it')
     httpd.serve_forever()

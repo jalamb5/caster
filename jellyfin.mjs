@@ -171,9 +171,11 @@ function parseJsonResponse(text, status) {
 }
 
 const jellyfinHttpError = status => {
-  if(status === 401 || status === 403) return new Error('Jellyfin sign-in expired or this account lacks access');
-  if(status === 404) return new Error('Jellyfin item was not found');
-  return new Error(`Jellyfin request failed (HTTP ${status})`);
+  const error = status === 401 || status === 403 ? new Error('Jellyfin sign-in expired or this account lacks access')
+    : status === 404 ? new Error('Jellyfin item was not found')
+    : new Error(`Jellyfin request failed (HTTP ${status})`);
+  error.status = status;   // callers must tell a rejection from a network failure (a dropped token vs a dropped connection)
+  return error;
 };
 
 const jellyfinNetworkError = () => new Error(
