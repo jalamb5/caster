@@ -934,3 +934,34 @@ test('setting text on a player element must not destroy a queryable child', () =
       `#${id} contains #${inner?.[1]} — writing textContent would destroy it and the next query would throw`);
   }
 });
+
+/* ---- The 2026-10-20 log: a chapter play that stopped when nobody asked it to. `media pause`
+   at 924s of 1253s with no `pause requested` line, then 44 minutes of heartbeats and no
+   playback at all — so the chapter never finished and the book never reached the next one. ---- */
+
+test('replay: the recorded 2026-10-20 interruption is resumed, and a requested pause is not', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  replay(context, audio, [
+    ['play', {paused:false, duration:1253, currentTime:924}],
+    ['pause', {paused:true, currentTime:924}],   // 06:42:10 — nobody asked for this
+  ]);
+  const plays = vm.runInContext('audio.playCalls', context);
+  fireInterval(30000);
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(log, /media interrupted \(watchdog\) — resuming from 924s/,
+    'an interruption must be resumed: nothing else was ever going to');
+  assert.ok(vm.runInContext('audio.playCalls', context) > plays, 'and it must actually play');
+});
+
+test('a pause he asked for is left alone', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  replay(context, audio, [['play', {paused:false, duration:1253, currentTime:924}]]);
+  vm.runInContext("pause('user')", context);
+  const plays = vm.runInContext('audio.playCalls', context);
+  fireInterval(30000);
+
+  assert.doesNotMatch(vm.runInContext("casterDiag.join(' | ')", context), /media interrupted/,
+    'resuming a deliberate pause would be the app fighting him');
+  assert.equal(vm.runInContext('audio.playCalls', context), plays, 'and it must not play');
+});

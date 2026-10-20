@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=10';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=10';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=11';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=11';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -368,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=10');
+    const r = await fetch('feeds.json?v=11');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -629,7 +629,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-17b';
+const CASTER_BUILD = '2026-10-20a';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
@@ -1755,6 +1755,20 @@ function audiobookMediaFailed(why){
   }, delay);
   return true;
 }
+// A pause we did not ask for — screen lock, another app taking audio focus, a call — used to
+// be permanent: nothing resumed it, so the chapter never finished and the book never reached
+// the next one. The 2026-10-20 log: `media pause` at 924s with no `pause requested` line,
+// then 44 minutes of heartbeats and silence. `lastStopReason` is the discriminator — it is
+// set by pause() and cleared by the next play, so it is truthy only for OUR pauses.
+function audiobookResumeIfInterrupted(why){
+  if(playerMode !== 'audiobook' || !audio.src || audio.ended) return false;
+  if(!audio.paused || lastStopReason) return false;
+  if(!lastTimeupdateAt || !(audio.currentTime > 0)) return false; // never played here
+  if(!currentAudiobookChapter()) return false;
+  diag(`media interrupted (${why}) — resuming from ${Math.round(audio.currentTime)}s`);
+  audio.play().catch(error => diag(`interrupted-resume play rejected: ${error?.name||''} ${error?.message||''}`));
+  return true;
+}
 
 /* ---------- events ---------- */
 // Every media-element transition, logged. The 2026-10-16 log could not say whether a
@@ -1847,6 +1861,7 @@ setInterval(() => { if(sleepTimer) renderSleepChip(); }, 30000);
 setInterval(() => {
   if(audiobookFinishIfDone('watchdog')) return;
   if(Date.now() - lastDiagAt > 25000) diag(`hb ${mediaState()}`);
+  if(audiobookResumeIfInterrupted('watchdog')) return;
   // A stream that stops yielding media looks exactly like a chapter that ended: the clock
   // stops and nothing says why. Recover it rather than waiting to be noticed.
   if(playerMode === 'audiobook' && !audio.paused && !audio.ended && audio.currentTime > 0 && Date.now() - lastTimeupdateAt > 40000) audiobookMediaFailed('stalled 40s');
