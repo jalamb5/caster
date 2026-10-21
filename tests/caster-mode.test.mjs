@@ -958,8 +958,9 @@ test('replay: the recorded 2026-10-20 interruption is resumed, and a requested p
   const {context, audio, fireInterval} = await playingChapter();
   replay(context, audio, [
     ['play', {paused:false, duration:1253, currentTime:924}],
-    ['pause', {paused:true, currentTime:924}],   // 06:42:10 — nobody asked for this
+    ['pause', {paused:true, currentTime:924}],   // 06:42:10 — nobody asked for this, page visible
   ]);
+  vm.runInContext('document.visibilityState = "visible"', context);
   const plays = vm.runInContext('audio.playCalls', context);
   fireInterval(30000);
 
@@ -1040,7 +1041,7 @@ test('a chapter advance opens ONE Jellyfin session when both callers race', asyn
 test('the interruption resume gives up after three tries instead of logging forever', async () => {
   const {context, audio, fireInterval} = await playingChapter();
   replay(context, audio, [['play', {paused:false}]]);          // a chapter that is playing
-  vm.runInContext('audio.duration = 1253; audio.currentTime = 924; audiobookPendingResume = null', context);
+  vm.runInContext('audio.duration = 1253; audio.currentTime = 924; audiobookPendingResume = null; document.visibilityState = "visible"', context);
   audio.dispatchEvent({type:'pause'});                          // 06:42:10 — nobody asked for this
   audio.play = () => Promise.reject(new Error('no audio focus'));
   for(let i = 0; i < 5; i++){
@@ -1070,4 +1071,65 @@ test('a failed boot check keeps the token; only a rejection clears it', async ()
     'being offline must not sign him out — the password is not stored anywhere');
   assert.equal((await bootWith(Object.assign(new Error('rejected'), { status: 401 }))) ?? null, null,
     'a real rejection still clears it');
+});
+
+/* ---- 2026-10-21: the resume loop. `media interrupted` every 30 seconds for 48 minutes, each
+   one followed by `media play` → `media playing` → `media pause` with the position unmoved:
+   the platform accepted the play and paused it straight back, and the counter that should have
+   stopped it was reset by the play event of each bounced attempt. ---- */
+
+test('a hidden page does not try to start audio — it can only stutter', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  replay(context, audio, [['play', {paused:false}]]);
+  vm.runInContext('audio.duration = 2480; audio.currentTime = 76; audiobookPendingResume = null; document.visibilityState = "hidden"; audio.paused = true', context);
+  audio.dispatchEvent({type:'pause'});
+  const plays = vm.runInContext('audio.playCalls', context);
+  for(let i = 0; i < 4; i++) fireInterval(30000);
+
+  assert.doesNotMatch(vm.runInContext("casterDiag.join(' | ')", context), /media interrupted/,
+    'a hidden page cannot start audio: the play is accepted and paused straight back');
+  assert.equal(vm.runInContext('audio.playCalls', context), plays,
+    'so it must not try — 96 attempts moved 10 seconds of audio in 48 minutes');
+});
+
+test('a resume the platform bounces straight back is not retried forever', async () => {
+  const {context, audio, fireInterval} = await playingChapter();
+  replay(context, audio, [['play', {paused:false}]]);
+  vm.runInContext('audio.duration = 2480; audio.currentTime = 76; audiobookPendingResume = null; document.visibilityState = "visible"; audio.paused = true', context);
+  audio.dispatchEvent({type:'pause'});
+  for(let i = 0; i < 6; i++){
+    fireInterval(30000);                            // the attempt: play() is accepted...
+    audio.dispatchEvent({type:'play'});             // ...`media play` (the line that used to reset the counter)
+    audio.dispatchEvent({type:'playing'});
+    vm.runInContext('audio.paused = true', context); // ...and the platform pauses it straight back
+    audio.dispatchEvent({type:'pause'});
+  }
+
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.equal((log.match(/media interrupted/g) || []).length, 3,
+    'a bounced attempt is a failure, not a success — resetting on the play event made this unbounded');
+  assert.equal((log.match(/interrupted resume gave up/g) || []).length, 1, 'and it says so once');
+});
+
+test('a session request that never settles does not silence every later attempt', () => {
+  const {context} = bootCaster();
+  vm.runInContext("audiobookUser={Id:'u',Name:'Justin'};", context);
+  const chapters = chaptersOf('a book');
+  const client = makeJellyfinClient(chapters);
+  client.getPlaybackInfo = () => new Promise(() => {});      // never settles
+  context.__client = client;
+  makeChapterContext(context, chapters);
+  vm.runInContext('audiobookClient=__client; casterDiag.length = 0;', context, {timeout:5000});
+
+  vm.runInContext('ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)', context, {timeout:5000});
+  vm.runInContext('ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)', context, {timeout:5000});
+  assert.equal((vm.runInContext("casterDiag.join(' | ')", context).match(/session attempt \d/g) || []).length, 1,
+    'the second caller must share the in-flight attempt');
+
+  vm.runInContext('audiobookSessionStartedAt = Date.now() - 20000', context);   // as if the 8s timeout had fired
+  vm.runInContext('ensureAudiobookSession(chapterList[0], audiobookPlaybackGeneration, 0)', context, {timeout:5000});
+  const log = vm.runInContext("casterDiag.join(' | ')", context);
+  assert.match(log, /session attempt never settled — retrying with a fresh request/,
+    '2026-10-21: one hung promise blocked the session for the whole night, silently');
+  assert.equal((log.match(/session attempt \d+\/6/g) || []).length, 2, 'and a fresh attempt is made');
 });

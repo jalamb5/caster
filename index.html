@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=12';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=12';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=13';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=13';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -362,7 +362,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=12');
+    const r = await fetch('feeds.json?v=13');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -642,7 +642,7 @@ function clearAudiobookResume(){
 const CASTER_BOOKMARK_KEY = 'caster.audiobooks.v1';
 // Shown on the audiobook screen so "which build is this phone running, and is it
 // actually connected" is answerable at a glance instead of by server forensics.
-const CASTER_BUILD = '2026-10-20b';
+const CASTER_BUILD = '2026-10-21a';
 // Persistent event log. Every "why did it stop reporting" question we have put to his
 // phone over three days is answerable from this buffer instead of a server probe.
 const CASTER_DIAG_KEY = 'caster.diag.v1';
@@ -1030,8 +1030,17 @@ function withSessionTimeout(promise, ms = SESSION_TIMEOUT_MS){
 // Both used to sail past the `audiobookSession` check while the request was in flight, so every
 // advance opened TWO Jellyfin sessions (his log: two "session ok"; his server: 69 sessions).
 let audiobookSessionPromise = null;
+let audiobookSessionStartedAt = 0;
 function ensureAudiobookSession(chapter, generation, positionSeconds){
+  // The timeout below should settle every attempt, but on 2026-10-21 one did not: the shared
+  // promise stayed pending all night, so `play without a session` repeated 96 times and no
+  // session was ever attempted again. This makes the guard self-healing.
+  if(audiobookSessionPromise && Date.now() - audiobookSessionStartedAt > SESSION_TIMEOUT_MS + 2000){
+    diag('session attempt never settled — retrying with a fresh request');
+    audiobookSessionPromise = null;
+  }
   if(!audiobookSessionPromise){
+    audiobookSessionStartedAt = Date.now();
     audiobookSessionPromise = openAudiobookSession(chapter, generation, positionSeconds)
       .finally(() => { audiobookSessionPromise = null; });
   }
@@ -1737,6 +1746,7 @@ let lastTimeupdateAt = 0;
 let lastStopReason = '';        // set only by OUR pauses, never by the browser's own
 let audiobookFinishedHandledFor = null;
 let interruptResumeAttempts = 0;
+let interruptResumePosition = 0;
 // The advance hangs entirely on the `ended` event. If the page is suspended when a chapter
 // ends, that event fires into nothing and is lost: the app then sits at the end of a
 // finished chapter looking fine. Worse, the resume-on-visible path refuses to touch an
@@ -1800,8 +1810,14 @@ function audiobookResumeIfInterrupted(why){
   if(!audio.paused || lastStopReason) return false;
   if(!lastTimeupdateAt || !(audio.currentTime > 0)) return false; // never played here
   if(!currentAudiobookChapter()) return false;
-  // Bounded, like the stream recovery. Unbounded, an audio-focus holder (a call) made this
-  // retry AND log on every 30s tick forever, filling the diagnostics buffer with nothing.
+  // A hidden page cannot START audio: the play is accepted and the platform pauses it straight
+  // back, so attempting this while the screen is off is not just useless, it is a stutter every
+  // 30 seconds all night (2026-10-21: 96 attempts, ~10s of audio moved in 48 minutes). The
+  // visibility handler resumes when the page comes back, and that path does work.
+  if(document.visibilityState !== 'visible') return false;
+  // An attempt counts only if the media RAN afterwards. Resetting this on the `play` event made
+  // the cap useless: every bounced attempt fired `play`, reset the counter, and tried again.
+  if(interruptResumeAttempts && audio.currentTime - interruptResumePosition >= 5) interruptResumeAttempts = 0;
   if(interruptResumeAttempts >= MEDIA_RECOVERY_ATTEMPTS){
     if(interruptResumeAttempts === MEDIA_RECOVERY_ATTEMPTS){
       interruptResumeAttempts += 1;
@@ -1812,6 +1828,7 @@ function audiobookResumeIfInterrupted(why){
     return false;
   }
   interruptResumeAttempts += 1;
+  interruptResumePosition = audio.currentTime;
   diag(`media interrupted (${why}) — resuming from ${Math.round(audio.currentTime)}s`);
   audio.play().catch(error => diag(`interrupted-resume play rejected: ${error?.name||''} ${error?.message||''}`));
   return true;
@@ -1831,14 +1848,13 @@ function mediaState(){
 }
 ['play','playing','pause','ended','waiting','stalled','suspend','abort','emptied','error','loadedmetadata','loadeddata','durationchange','ratechange'].forEach(ev => audio.addEventListener(ev, () => {
   diag(`media ${ev} ${mediaState()}`);
-  if(ev === 'play'){ lastStopReason = ''; lastTimeupdateAt = Date.now(); interruptResumeAttempts = 0; }
+  if(ev === 'play'){ lastStopReason = ''; lastTimeupdateAt = Date.now(); }
   if(ev === 'error') audiobookMediaFailed('error');
 }));
 audio.addEventListener('timeupdate', () => {
   mediaLastPos = audio.currentTime;
   lastTimeupdateAt = Date.now();
   mediaRecoveryAttempts = 0;   // media is moving: a later failure starts fresh
-  interruptResumeAttempts = 0;
 });
 audio.addEventListener('seeking', () => { mediaSeekFrom = mediaLastPos; diag(`media seeking ${Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); });
 audio.addEventListener('seeked', () => { diag(`media seeked ${mediaSeekFrom===null?'?':Math.round(mediaSeekFrom)}->${Math.round(audio.currentTime||0)} ${mediaState()}`); mediaLastPos = audio.currentTime; mediaSeekFrom = null; });
