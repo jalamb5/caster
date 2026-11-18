@@ -33,7 +33,7 @@ body{
   -webkit-user-select:none; user-select:none;
 }
 .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
-.glow{color:var(--accent); text-shadow:0 0 10px rgba(255,160,46,.55);}
+.glow{color:var(--accent); text-shadow:0 0 12px rgba(255,160,46,.22);}
 .wrap{max-width:520px;margin:0 auto;padding:0 16px;}
 header{
   position:sticky; top:0; z-index:20; backdrop-filter:blur(14px);
@@ -44,7 +44,7 @@ header{
 .head h1{
   font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   font-size:20px; margin:0; font-weight:700; letter-spacing:.35em;
-  color:var(--accent); text-shadow:0 0 12px rgba(255,160,46,.5);
+  color:var(--accent); text-shadow:0 1px 8px rgba(0,0,0,.55);
 }
 .head .sp{flex:1;}
 .chip{
@@ -52,16 +52,16 @@ header{
   border-radius:14px; padding:12px 18px; font-size:15px; cursor:pointer;
   min-height:46px; display:inline-flex; align-items:center; justify-content:center; gap:6px;
 }
-.chip.on{color:var(--accent); border-color:rgba(255,160,46,.7); text-shadow:0 0 8px rgba(255,160,46,.4);}
-.chip.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:700; box-shadow:0 4px 18px rgba(255,160,46,.35);}
+.chip.on{color:var(--accent); border-color:rgba(255,160,46,.75);}
+.chip.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:700; box-shadow:0 2px 12px rgba(0,0,0,.35);}
 .iconbtn{
   width:48px;height:48px;border-radius:14px;border:1px solid var(--line);
   background:var(--surface);color:var(--text);font-size:19px;cursor:pointer;display:grid;place-items:center;
 }
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:14px;}
-.shuffle-all{cursor:pointer;background:linear-gradient(140deg,#2b2010 0%,var(--surface) 65%);border-color:rgba(255,160,46,.35);}
+.shuffle-all{cursor:pointer;background:linear-gradient(140deg,#2b2010 0%,var(--surface) 65%);border-color:rgba(255,160,46,.18);}
 .shuffle-all:active{transform:scale(.985);}
-.shuffle-all .sa-icon{width:52px;height:52px;border-radius:16px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:26px;flex:none;box-shadow:0 0 22px rgba(255,160,46,.45);}
+.shuffle-all .sa-icon{width:52px;height:52px;border-radius:16px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:26px;flex:none;box-shadow:0 2px 12px rgba(0,0,0,.4);}
 .muted{color:var(--muted);}
 .small{font-size:13.5px;}
 .empty{text-align:center;padding:56px 20px;color:var(--muted);}
@@ -93,7 +93,7 @@ header{
 .ep .dlbtn{flex:none;background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px;border-radius:6px;line-height:1;}
 .ep .dlbtn:hover,.ep .dlbtn:focus{background:var(--surface2);color:var(--text);}
 .ep .dlbtn.dl-done{color:var(--ok);}
-.ep .dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px rgba(255,160,46,.6);align-self:center;}
+.ep .dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px rgba(255,160,46,.18);align-self:center;}
 .ep.heard .dot{background:var(--surface2);box-shadow:none;}
 
 .pbar{
@@ -108,7 +108,7 @@ header{
 .pbar .ctr{display:flex;gap:4px;align-items:center;}
 .pbar .ctr button{background:none;border:none;color:var(--text);font-size:24px;cursor:pointer;padding:12px;line-height:1;min-width:52px;min-height:52px;}
 .pbar .prog{position:absolute;left:0;right:0;top:0;height:3px;background:var(--line);}
-.pbar .prog .fill{height:100%;background:var(--accent);width:0%;box-shadow:0 0 8px rgba(255,160,46,.7);}
+.pbar .prog .fill{height:100%;background:var(--accent);width:0%;}
 
 .overlay{
   position:fixed;inset:0;z-index:40;background:rgba(14,11,6,.97);backdrop-filter:blur(22px);
@@ -116,19 +116,20 @@ header{
 }
 .overlay.open{display:flex;}
 .overlay .top{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-top:env(safe-area-inset-top);}
-.overlay .art{width:min(62vw,260px);aspect-ratio:1;border-radius:26px;background:var(--surface2);object-fit:cover;margin:2vh auto 20px;display:block;box-shadow:0 22px 60px rgba(0,0,0,.55),0 0 0 1px rgba(255,160,46,.15);}
+.overlay .art{width:min(62vw,260px);aspect-ratio:1;border-radius:26px;background:var(--surface2);object-fit:cover;margin:2vh auto 20px;display:block;box-shadow:0 24px 64px rgba(0,0,0,.55),0 1px 0 rgba(255,255,255,.04);}
 .overlay .ot{font-size:20px;font-weight:700;text-align:center;line-height:1.3;}
 .overlay .os{font-size:14px;color:var(--muted);text-align:center;margin-top:6px;}
 .track{height:30px;display:flex;align-items:center;cursor:pointer;margin:18px 0 2px;touch-action:none;}
 .track .rail{position:relative;height:6px;border-radius:99px;background:var(--surface2);flex:1;}
-.track .rail .fill{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--accent);box-shadow:0 0 10px rgba(255,160,46,.6);}
-.track .rail .knob{position:absolute;top:50%;width:18px;height:18px;border-radius:50%;background:var(--accent);transform:translate(-50%,-50%);box-shadow:0 0 0 4px rgba(255,160,46,.22),0 0 14px rgba(255,160,46,.6);}
-.times{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+.track .rail .fill{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--accent);box-shadow:0 0 6px rgba(255,160,46,.25);}
+.track .rail .knob{position:absolute;top:50%;width:20px;height:20px;border-radius:50%;background:var(--accent);transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(255,160,46,.16);}
+.times{display:flex;justify-content:space-between;font-size:14px;color:var(--muted);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+.times #ovCur{color:var(--text);font-weight:600;}
 .controls{display:flex;justify-content:center;align-items:center;gap:30px;margin:14px 0 6px;}
 .controls button{background:none;border:none;color:var(--text);cursor:pointer;}
 .controls .seek{font-size:17px;padding:14px;color:var(--muted);min-width:64px;min-height:56px;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
 .controls .skip{font-size:34px;padding:14px;min-width:72px;min-height:64px;}
-.controls .pp{font-size:60px;padding:6px;color:var(--accent);text-shadow:0 0 18px rgba(255,160,46,.55);min-width:88px;min-height:76px;}
+.controls .pp{font-size:60px;padding:6px;color:var(--accent);text-shadow:0 0 14px rgba(255,160,46,.3);min-width:88px;min-height:76px;background:rgba(255,160,46,.07);border-radius:50%;}
 .row{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:16px;}
 
 .modal{position:fixed;inset:0;z-index:50;background:rgba(10,8,4,.85);backdrop-filter:blur(8px);display:none;align-items:flex-end;justify-content:center;}
@@ -164,6 +165,11 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 }
 .toast.show{opacity:1;}
 @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:99px;border:3px solid var(--bg)}
+::selection{background:rgba(255,160,46,.28)}
+.resume-card{background:linear-gradient(140deg,rgba(255,160,46,.14),var(--surface) 58%);border-color:rgba(255,160,46,.45);}
+.resume-card .sa-icon{box-shadow:0 2px 10px rgba(0,0,0,.4);}
 
 </style>
 </head>
@@ -175,7 +181,7 @@ input[type=range]{width:100%;accent-color:var(--accent);}
     <span class="sp"></span>
     <button class="chip mono" id="sleepChip" title="Sleep timer">⏾ off</button>
     <button class="iconbtn" id="addBtn" title="Add a show">＋</button>
-    <button class="iconbtn" id="booksBtn" title="Harry Potter audiobooks">📚</button>
+    <button class="iconbtn" id="booksBtn" title="Audiobooks">📚</button>
     <button class="iconbtn" id="setBtn" title="Settings">⚙</button>
   </div>
 </header>
@@ -239,8 +245,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=14';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=14';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=15';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=15';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -362,7 +368,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=14');
+    const r = await fetch('feeds.json?v=15');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -1445,7 +1451,7 @@ function audiobookFooter(){
 }
 function renderAudiobookFolderList(title, headerExtra, items){
   const isRoot = audiobooksNavBack.length === 0;
-  const resumeCard = (isRoot && audiobookResume) ? `<div class="card shuffle-all" id="abQuickResume" style="margin-top:12px"><div style="display:flex;align-items:center;gap:14px"><div class="sa-icon">▶</div><div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16.5px">Continue listening</div><div class="small muted mono">${esc(audiobookResume.bookTitle)}${audiobookResume.chapterNumber ? ' · Ch ' + audiobookResume.chapterNumber : ''}${audiobookResume.chapterTitle ? ': ' + esc(audiobookResume.chapterTitle) : ''}</div></div></div></div>` : '';
+  const resumeCard = (isRoot && audiobookResume) ? `<div class="card shuffle-all resume-card" id="abQuickResume" style="margin-top:12px"><div style="display:flex;align-items:center;gap:14px"><div class="sa-icon">▶</div><div style="flex:1;min-width:0"><div style="font-weight:700;font-size:16.5px">Continue listening</div><div class="small muted mono">${esc(audiobookResume.bookTitle)}${audiobookResume.chapterNumber ? ' · Ch ' + audiobookResume.chapterNumber : ''}${audiobookResume.chapterTitle ? ': ' + esc(audiobookResume.chapterTitle) : ''}</div></div></div></div>` : '';
   return `<div class="row" style="justify-content:stretch;margin:6px 0 12px"><button class="chip" id="modePodcasts" style="flex:1">🎙 Podcasts</button><button class="chip primary" id="modeBooks" style="flex:1">📚 Audiobooks</button></div><div class="row" style="justify-content:space-between;margin:0 0 8px"><span class="muted small">${esc(title)}</span>${headerExtra}</div>${resumeCard}${audiobookError?`<p class="small" style="color:var(--danger)">${esc(audiobookError)}</p>`:''}<div class="card" style="padding:4px 12px">${items.map(i => {
     const icon = i.type === 'Folder' ? '📁' : '🎧';
     return `<div class="show" data-nav="${esc(i.id)}" style="border-radius:10px"><div style="flex:1;min-width:0"><div class="t">${icon} ${esc(i.name)}</div><div class="s">${i.type === 'Folder' ? 'Folder' : 'Audiobook'}</div></div><span style="font-size:20px;color:var(--muted)">›</span></div>`;
@@ -1549,7 +1555,7 @@ function renderPlayerBar(){
   $('#pbarArt').style.visibility = art ? 'visible' : 'hidden';
   if(art) $('#pbarArt').src = art;
   $('#pbarTitle').textContent = ep.title || '';
-  $('#pbarShow').textContent = isBook ? `${show?.title || 'Harry Potter'} · Chapter ${ep.chapterNumber}` : (show?.title || '');
+  $('#pbarShow').textContent = isBook ? `${show?.title || 'Audiobook'} · Chapter ${ep.chapterNumber}` : (show?.title || '');
   $('#pbarCached').style.display = !isBook && isDownloaded(ep.guid) ? '' : 'none';
   $('#pbarPlay').textContent = audio.paused ? '▶' : '❚❚';
   $('#pbarSkip').style.display = isBook ? 'none' : '';
@@ -1567,7 +1573,7 @@ function renderOverlay(){
   $('#ovArt').style.visibility = art ? 'visible' : 'hidden';
   if(art) $('#ovArt').src = art;
   $('#ovTitle').textContent = ep.title || '';
-  $('#ovShow').textContent = isBook ? `${show?.title || 'Harry Potter'} · Chapter ${ep.chapterNumber}` : (show?.title || '');
+  $('#ovShow').textContent = isBook ? `${show?.title || 'Audiobook'} · Chapter ${ep.chapterNumber}` : (show?.title || '');
   // Session failures used to be invisible from the player — the only surfacing was a
   // banner on the list view you have to navigate back to.
   const err = isBook ? audiobookError : '';
