@@ -239,8 +239,8 @@ input[type=range]{width:100%;accent-color:var(--accent);}
 <div class="toast" id="toast"></div>
 
 <script type="module">
-import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=13';
-import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=13';
+import { JellyfinClient, createDeviceId, nextChapter, ticksToSeconds, secondsToTicks, buildStreamUrl, normalizeServerUrl, genericNormalizeChapters } from './jellyfin.mjs?v=14';
+import { appendEvent, loadEvents, groupEventsByNight, analyzeNight, summarizeNight, pruneOldEvents, localDate } from './sleep.mjs?v=14';
 'use strict';
 /* ============================================================
    Caster — shuffle your podcasts. Single-file PWA.
@@ -362,7 +362,7 @@ async function downloadRandomBatch(count = 5){
    episode guid. New episodes appear after `python3 refresh_feeds.py` + push. */
 async function loadBundledShows(){
   try{
-    const r = await fetch('feeds.json?v=13');
+    const r = await fetch('feeds.json?v=14');
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.bundledUpdated = data.updated || '';
@@ -823,7 +823,7 @@ async function navigateAudiobooksToRoot(){
     const cat = await audiobookClient.getAudiobooksCatalogue();
     const items = await audiobookClient.getFolderItems(cat.libraryId);
     // Only show the folders the user cares about for sleep listening
-    const keep = new Set(['Bill Bryson', 'Terry Pratchett', 'J K Rowling - Harry Potter 1-7 Unabridged Audiobooks Narrated by Stephen Fry']);
+    const keep = new Set(['Bill Bryson', 'Terry Pratchett', 'J K Rowling - Harry Potter 1-7 Unabridged Audiobooks Narrated by Stephen Fry', 'Freya Marske']);
     audiobooksNav = (items.Items || [])
       .filter(i => i.Type === 'Folder' && keep.has(i.Name))
       .map(i => ({ id: i.Id, name: i.Name, type: i.Type }));
